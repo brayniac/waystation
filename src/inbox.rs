@@ -147,14 +147,14 @@ pub fn classify(
     if m.to.iter().any(|t| t == agent_id) {
         return Tier::Immediate;
     }
-    // Another session of the same agent: keep it visible but never interrupt.
-    if m.from.agent == agent_id {
-        return Tier::Batched;
-    }
     if let Some(parent) = m.reply_to
         && my_threads.contains(&parent.to_string())
     {
         return Tier::Immediate;
+    }
+    // Another session of the same agent: keep it visible but never interrupt.
+    if m.from.agent == agent_id {
+        return Tier::Batched;
     }
     if m.priority == Priority::Low {
         return Tier::Silent;

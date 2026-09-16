@@ -205,9 +205,19 @@ impl WaystationServer {
             for u in added {
                 match u.tier {
                     Tier::Immediate => {
-                        let (c, m) = render_event(&u);
-                        self.push(c, m).await;
-                        self.mark_pushed(&[u]);
+                        let still_unread = self
+                            .core
+                            .inbox
+                            .lock()
+                            .unwrap()
+                            .unread
+                            .iter()
+                            .any(|q| q.message.id == u.message.id);
+                        if still_unread {
+                            let (c, m) = render_event(&u);
+                            self.push(c, m).await;
+                            self.mark_pushed(&[u]);
+                        }
                     }
                     Tier::Batched => {
                         batch_started.get_or_insert_with(Instant::now);
@@ -215,6 +225,15 @@ impl WaystationServer {
                     }
                     Tier::Silent => {}
                 }
+            }
+            // Anything a tool call already handed to the model (ws_inbox drains the
+            // unread queue) must not be pushed again.
+            {
+                let inbox = self.core.inbox.lock().unwrap();
+                batch.retain(|u| inbox.unread.iter().any(|q| q.message.id == u.message.id));
+            }
+            if batch.is_empty() {
+                batch_started = None;
             }
             let age_hit = batch_started
                 .is_some_and(|t| t.elapsed() >= Duration::from_secs(poll.batch_age_secs));
