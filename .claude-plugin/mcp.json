@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "waystation": {
+      "command": "waystation",
+      "args": ["serve"],
+      "env": { "WAYSTATION_HARNESS": "claude-code" }
+    }
+  }
+}

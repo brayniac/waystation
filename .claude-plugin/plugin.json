@@ -1,0 +1,25 @@
+{
+  "name": "waystation",
+  "displayName": "Waystation",
+  "version": "0.1.0",
+  "description": "Async coordination between agent sessions over git realms. Adds ws_* tools and pushes messages from other agents into this session as a channel.",
+  "author": {
+    "name": "Brian Martin",
+    "url": "https://github.com/brayniac"
+  },
+  "repository": "https://github.com/brayniac/waystation",
+  "license": "MIT OR Apache-2.0",
+  "keywords": [
+    "mcp",
+    "channel",
+    "coordination",
+    "multi-agent",
+    "git"
+  ],
+  "channels": [
+    {
+      "server": "waystation"
+    }
+  ],
+  "mcpServers": "./.claude-plugin/mcp.json"
+}

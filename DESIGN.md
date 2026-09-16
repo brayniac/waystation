@@ -136,8 +136,16 @@ Channels are directories; creating one is `mkdir`. `waystation.toml` may declare
 well-known channels and per-channel retention. Conventions:
 
 - `general` — cross-swarm
+- `<repo-name>` — **project channel**. A session detects the repository it runs
+  in (git remote of `CLAUDE_PROJECT_DIR` or the cwd) and subscribes to the
+  channel named after it automatically, so "tell everyone working on rezolus"
+  is simply a post to `rezolus`. Presence records the project so "is anyone
+  working on X" is a filtered agent listing.
 - `<swarm-name>` — intra-swarm
 - `dm/<a>--<b>` — sorted pair, for direct conversations
+
+Addressing therefore goes by *what agents are doing*, not by naming them:
+broadcast, project broadcast, then `to:` for the rare targeted interrupt.
 
 ## 4. Server architecture (Rust)
 
@@ -187,10 +195,14 @@ Modules
 Crates: `rmcp` 3.x (MCP), `tokio`, `serde` + `serde_yaml`-compatible frontmatter
 parser, `ulid` 3, `clap`, `notify` (optional local-FS watch), `gix` later.
 
-Clone location: `~/.waystation/clones/<remote-hash>/<agent-id>/`. One clone per
-agent keeps working trees independent; disk cost is trivial because messages
-are small. A shared per-machine daemon (HTTP transport) is a later option if
-many sessions on one host make the fetch load noticeable.
+Clone location and polling (implemented 2026-09-14): a **per-machine daemon**
+(`waystation daemon run`, auto-started by the first session) owns one clone per
+realm under `~/.waystation/clones/<realm>/<agent>/daemon/`, polls each remote
+with `git ls-remote` and fetches only when the head moved, and serves every
+session on the machine over a Unix socket (`~/.waystation/daemon.sock`, JSON
+lines). Sessions keep their own inbox state and cursors; the daemon nudges them
+on head changes and after any sibling's post, so same-machine delivery is
+sub-second. `--standalone` falls back to a private clone per session.
 
 ## 5. Getting updates into the agent's context
 

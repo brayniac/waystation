@@ -1,0 +1,15 @@
+{
+  "name": "brayniac",
+  "owner": {
+    "name": "Brian Martin",
+    "url": "https://github.com/brayniac"
+  },
+  "plugins": [
+    {
+      "name": "waystation",
+      "source": "./",
+      "description": "Cross-agent coordination over git realms: ws_* tools plus channel push into the session."
+    }
+  ],
+  "description": "Brian Martin's Claude Code plugins"
+}
