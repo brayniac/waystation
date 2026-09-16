@@ -6,7 +6,7 @@ use crate::inbox::{Tier, Unread, render_digest, render_event};
 use crate::model::{Kind, Priority, Ref};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolResult, ContentBlock, CustomNotification, Implementation, ServerCapabilities, ServerInfo,
+    CallToolResult, ContentBlock, CustomNotification, Implementation, InitializeResult, ServerCapabilities,
     ServerNotification,
 };
 use rmcp::service::{NotificationContext, Peer, RoleServer};
@@ -452,14 +452,14 @@ impl WaystationServer {
 
 #[tool_handler]
 impl ServerHandler for WaystationServer {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> InitializeResult {
         let mut experimental = BTreeMap::new();
         experimental.insert(CHANNEL_CAPABILITY.to_string(), serde_json::Map::new());
         let caps = ServerCapabilities::builder()
             .enable_tools()
             .enable_experimental_with(experimental)
             .build();
-        let mut info = ServerInfo::new(caps);
+        let mut info = InitializeResult::new(caps);
         info.server_info = Implementation::new("waystation", env!("CARGO_PKG_VERSION"));
         info.instructions = Some(self.core.instructions());
         info

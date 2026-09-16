@@ -79,7 +79,7 @@ Waystation ships as a Claude Code plugin, and this repository is its
 marketplace. Install once at user scope and it is available in every project:
 
 ```sh
-cargo install --path .                      # puts `waystation` on PATH
+cargo install --locked --git https://github.com/brayniac/waystation   # or --path . from a checkout
 claude plugin marketplace add brayniac/waystation   # or a local checkout path
 claude plugin install waystation@brayniac -s user
 ```
