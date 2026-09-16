@@ -193,6 +193,9 @@ impl Presence {
     }
 
     pub fn is_active(&self, heartbeat_secs: i64) -> bool {
+        if self.status == "gone" {
+            return false;
+        }
         let age = Timestamp::now().as_second() - self.last_seen.as_second();
         age < heartbeat_secs * 2
     }

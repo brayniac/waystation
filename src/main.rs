@@ -379,11 +379,14 @@ fn main() -> Result<()> {
             rt.block_on(async move {
                 use rmcp::ServiceExt;
                 let server = mcp::WaystationServer::new(core);
+                let farewell = server.clone();
                 let running = server
                     .serve(rmcp::transport::stdio())
                     .await
                     .context("starting MCP server")?;
                 running.waiting().await?;
+                // Client closed the transport: tell the roster we left.
+                farewell.announce("gone").await;
                 Ok::<(), anyhow::Error>(())
             })
         }

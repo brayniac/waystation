@@ -46,6 +46,9 @@ pub struct Poll {
     /// …or after this many seconds, whichever comes first.
     #[serde(default = "default_batch_age")]
     pub batch_age_secs: u64,
+    /// Rewrite this session's presence file this often while connected.
+    #[serde(default = "default_heartbeat")]
+    pub heartbeat_secs: u64,
 }
 
 fn default_interval() -> u64 {
@@ -63,6 +66,9 @@ fn default_batch_size() -> usize {
 fn default_batch_age() -> u64 {
     180
 }
+fn default_heartbeat() -> u64 {
+    600
+}
 
 impl Default for Poll {
     fn default() -> Self {
@@ -72,6 +78,7 @@ impl Default for Poll {
             idle_after_secs: default_idle_after(),
             batch_size: default_batch_size(),
             batch_age_secs: default_batch_age(),
+            heartbeat_secs: default_heartbeat(),
         }
     }
 }

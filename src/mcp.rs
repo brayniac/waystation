@@ -25,6 +25,8 @@ pub const CHANNEL_NOTIFICATION: &str = "notifications/claude/channel";
 pub struct WaystationServer {
     core: Arc<Core>,
     peer: Arc<Mutex<Option<Peer<RoleServer>>>>,
+    /// Last role/focus announced, re-sent by the heartbeat.
+    presence: Arc<std::sync::Mutex<(Option<String>, Option<String>)>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -117,7 +119,28 @@ fn text(s: String) -> CallToolResult {
 
 impl WaystationServer {
     pub fn new(core: Arc<Core>) -> Self {
-        Self { core, peer: Arc::new(Mutex::new(None)) }
+        let presence = (std::env::var("WAYSTATION_ROLE").ok(), std::env::var("WAYSTATION_FOCUS").ok());
+        Self { core, peer: Arc::new(Mutex::new(None)), presence: Arc::new(std::sync::Mutex::new(presence)) }
+    }
+
+    /// Write presence with the last announced role/focus and the given status.
+    pub async fn announce(&self, status: &'static str) {
+        let (role, focus) = self.presence.lock().unwrap().clone();
+        let core = self.core.clone();
+        match tokio::task::spawn_blocking(move || core.register(role, focus, status)).await {
+            Ok(Err(e)) => tracing::warn!("presence write failed: {e:#}"),
+            Err(e) => tracing::warn!("presence task failed: {e}"),
+            Ok(Ok(_)) => {}
+        }
+    }
+
+    /// Periodic presence refresh so other agents can tell this session is alive.
+    async fn run_heartbeat(self) {
+        let every = Duration::from_secs(self.core.config.poll.heartbeat_secs.max(30));
+        loop {
+            tokio::time::sleep(every).await;
+            self.announce("active").await;
+        }
     }
 
     fn with_trailer(&self, mut s: String) -> String {
@@ -369,6 +392,7 @@ impl WaystationServer {
         description = "Declare this session's role and current focus; writes presence to every mounted realm."
     )]
     async fn register(&self, Parameters(p): Parameters<RegisterParams>) -> Result<CallToolResult, McpError> {
+        *self.presence.lock().unwrap() = (p.role.clone(), p.focus.clone());
         let core = self.core.clone();
         let res = tokio::task::spawn_blocking(move || core.register(p.role, p.focus, "active"))
             .await
@@ -467,15 +491,10 @@ impl ServerHandler for WaystationServer {
 
     async fn on_initialized(&self, ctx: NotificationContext<RoleServer>) {
         *self.peer.lock().await = Some(ctx.peer.clone());
-        // Presence is automatic: announce this session in every realm.
-        let core = self.core.clone();
-        let role = std::env::var("WAYSTATION_ROLE").ok();
-        let focus = std::env::var("WAYSTATION_FOCUS").ok();
-        tokio::spawn(async move {
-            if let Err(e) = tokio::task::spawn_blocking(move || core.register(role, focus, "active")).await {
-                tracing::warn!("auto-register failed: {e}");
-            }
-        });
+        // Presence is automatic: announce this session in every realm, then keep it fresh.
+        let me = self.clone();
+        tokio::spawn(async move { me.announce("active").await });
+        tokio::spawn(self.clone().run_heartbeat());
         let external = self.core.realms.values().filter(|r| r.trust == Trust::External).count();
         tracing::info!(realms = self.core.realms.len(), external, "client initialized; starting pusher");
         tokio::spawn(self.clone().run_pusher());
