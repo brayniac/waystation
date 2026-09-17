@@ -1,7 +1,8 @@
 //! Trees: one `WAYSTATION_HOME` each, selected by the project a session runs in.
 
+use crate::config::Config;
 use anyhow::{Context, Result, bail};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One tree in the roster.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,43 @@ pub struct Roster {
 }
 
 impl Roster {
+    /// Read the tree at `root` and every sibling it lists.
+    pub fn load(root: &Path) -> Result<Roster> {
+        let root = expand_tilde(root);
+        let cfg = Config::load_from(&root)?;
+        let mut roster = Roster {
+            trees: vec![Tree {
+                name: cfg.tree.name.clone().unwrap_or_else(|| name_from_path(&root)),
+                path: root.clone(),
+                projects: cfg.tree.projects.clone(),
+                is_default: true,
+            }],
+            warnings: vec![],
+        };
+        for sibling in &cfg.tree.siblings {
+            let path = expand_tilde(sibling);
+            if roster.trees.iter().any(|t| t.path == path) {
+                continue;
+            }
+            if !path.join("config.toml").exists() {
+                roster.warnings.push(format!(
+                    "tree {} has no config.toml; skipped. Remove it with `waystation tree rm {}`",
+                    path.display(),
+                    sibling.display()
+                ));
+                continue;
+            }
+            let sc = Config::load_from(&path)?;
+            roster.trees.push(Tree {
+                name: sc.tree.name.clone().unwrap_or_else(|| name_from_path(&path)),
+                path,
+                projects: sc.tree.projects.clone(),
+                is_default: false,
+            });
+        }
+        Ok(roster)
+    }
+
     pub fn default_tree(&self) -> Result<&Tree> {
         self.trees.iter().find(|t| t.is_default).context("no default tree")
     }
@@ -82,6 +120,26 @@ pub fn claim_matches(claim: &str, project: &str) -> bool {
             .is_some_and(|(o, rest)| o == owner && !rest.is_empty());
     }
     claim == project
+}
+
+/// Expand a leading `~` against the home directory.
+pub fn expand_tilde(p: &Path) -> PathBuf {
+    let Ok(rest) = p.strip_prefix("~") else { return p.to_path_buf() };
+    match dirs::home_dir() {
+        Some(home) => home.join(rest),
+        None => p.to_path_buf(),
+    }
+}
+
+/// `~/.waystation` → `default`, `~/.waystation-work` → `work`, else the basename.
+pub fn name_from_path(p: &Path) -> String {
+    let base = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let base = base.strip_prefix('.').unwrap_or(&base).to_string();
+    match base.strip_prefix("waystation-") {
+        Some(rest) if !rest.is_empty() => rest.to_string(),
+        _ if base == "waystation" || base.is_empty() => "default".to_string(),
+        _ => base,
+    }
 }
 
 #[cfg(test)]
@@ -191,11 +249,79 @@ mod tests {
     fn duplicate_tree_names_are_an_error_naming_both_paths() {
         let mut r = roster();
         r.trees.push(Tree {
-            path: PathBuf::from("/trees/work-2"),
+            path: PathBuf::from("/trees/second"),
             ..tree("work", &[], false)
         });
         let err = r.resolve(None, Some("work")).unwrap_err().to_string();
         assert!(err.contains("/trees/work"), "{err}");
-        assert!(err.contains("/trees/work-2"), "{err}");
+        assert!(err.contains("/trees/second"), "{err}");
+    }
+
+    use crate::config::Config;
+
+    fn write_tree(dir: &Path, name: Option<&str>, projects: &[&str], siblings: &[PathBuf]) {
+        let mut cfg = Config::default();
+        cfg.identity.operator = "brayniac".into();
+        cfg.tree.name = name.map(|s| s.to_string());
+        cfg.tree.projects = projects.iter().map(|s| s.to_string()).collect();
+        cfg.tree.siblings = siblings.to_vec();
+        cfg.save_to(dir).unwrap();
+    }
+
+    #[test]
+    fn names_fall_back_to_the_directory() {
+        assert_eq!(name_from_path(Path::new("/Users/x/.waystation")), "default");
+        assert_eq!(name_from_path(Path::new("/Users/x/.waystation-work")), "work");
+        assert_eq!(name_from_path(Path::new("/Users/x/realms")), "realms");
+    }
+
+    #[test]
+    fn load_reads_the_default_tree_and_its_siblings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".waystation");
+        let work = tmp.path().join(".waystation-work");
+        write_tree(&root, None, &[], &[work.clone()]);
+        write_tree(&work, Some("work"), &["acme-corp/*"], &[]);
+
+        let r = Roster::load(&root).unwrap();
+        assert_eq!(r.trees.len(), 2);
+        assert_eq!(r.default_tree().unwrap().name, "default");
+        assert!(r.default_tree().unwrap().is_default);
+        assert_eq!(r.resolve(Some("acme-corp/api"), None).unwrap().name, "work");
+        assert!(r.warnings.is_empty());
+    }
+
+    #[test]
+    fn a_missing_sibling_warns_and_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".waystation");
+        let gone = tmp.path().join(".waystation-gone");
+        write_tree(&root, None, &[], &[gone.clone()]);
+
+        let r = Roster::load(&root).unwrap();
+        assert_eq!(r.trees.len(), 1);
+        assert_eq!(r.warnings.len(), 1);
+        assert!(r.warnings[0].contains(".waystation-gone"), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn a_default_tree_with_no_config_still_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".waystation");
+        let r = Roster::load(&root).unwrap();
+        assert_eq!(r.trees.len(), 1);
+        assert_eq!(r.resolve(None, None).unwrap().name, "default");
+    }
+
+    #[test]
+    fn a_sibling_listed_twice_appears_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".waystation");
+        let work = tmp.path().join(".waystation-work");
+        write_tree(&root, None, &[], &[work.clone(), work.clone()]);
+        write_tree(&work, Some("work"), &[], &[]);
+
+        let r = Roster::load(&root).unwrap();
+        assert_eq!(r.trees.len(), 2);
     }
 }
