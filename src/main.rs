@@ -8,6 +8,7 @@ mod model;
 mod poller;
 mod repo;
 mod store;
+mod tree;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
