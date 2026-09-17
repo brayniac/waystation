@@ -152,10 +152,6 @@ pub fn classify(
     {
         return Tier::Immediate;
     }
-    // Another session of the same agent: keep it visible but never interrupt.
-    if m.from.agent == agent_id {
-        return Tier::Batched;
-    }
     if m.priority == Priority::Low {
         return Tier::Silent;
     }
@@ -233,5 +229,13 @@ mod tests {
         let mut m = msg("backend");
         m.priority = Priority::Low;
         assert_eq!(classify(&m, "x/me", &subs, &threads), Tier::Silent);
+        // A sibling session of the same agent gets ordinary routing: unsubscribed → silent.
+        let mut m = msg("other");
+        m.from.agent = "x/me".into();
+        m.from.session = Some("sibling".into());
+        assert_eq!(classify(&m, "x/me", &subs, &threads), Tier::Silent);
+        let mut m = msg("backend");
+        m.from.agent = "x/me".into();
+        assert_eq!(classify(&m, "x/me", &subs, &threads), Tier::Batched);
     }
 }
