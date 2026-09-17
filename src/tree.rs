@@ -337,8 +337,11 @@ pub fn normalize_claim(raw: &str) -> Result<String> {
 /// Whether `s` is shaped like a git remote URL rather than a bare `owner/name`
 /// or `owner/*` glob claim: an explicit `scheme://` (`https://…`), or a `:`
 /// that appears before any `/` (the SCP-style `user@host:owner/repo`, which
-/// has no `://`). A claim or glob never contains a `:`, so this only ever
-/// fires on something URL-shaped.
+/// has no `://`). A claim or glob never contains a `:`, so this correctly
+/// fires on every realistic remote URL. It also fires on two inputs that
+/// are not one — a Windows-style path (`C:\repos\thing`) and a
+/// `host:port/owner/repo` string — but neither is a plausible `--project`
+/// value, so the heuristic is left as-is rather than special-cased for them.
 fn looks_like_remote_url(s: &str) -> bool {
     if s.contains("://") {
         return true;

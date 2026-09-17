@@ -127,11 +127,16 @@ directory it is started in, which need not be the directory the operator
 launched from.
 
 POSIX `export` lines are the only format. The documented wrapper evaluates them
-in a subshell so that nothing leaks back into the interactive shell:
+in a subshell so that nothing leaks back into the interactive shell, and
+checks the command substitution's exit status so a refusal actually stops the
+launch — `waystation env` prints nothing to stdout on failure, so a bare
+`eval "$(waystation env)" && exec ...` would see `eval ""` (a no-op that
+exits 0) and launch anyway:
 
 ```sh
 claude-ws() {
-  ( eval "$(waystation env)"
+  ( exports="$(waystation env)" || exit 1
+    eval "$exports"
     exec claude --dangerously-load-development-channels plugin:waystation@brayniac "$@" )
 }
 ```

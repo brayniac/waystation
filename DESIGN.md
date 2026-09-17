@@ -188,14 +188,19 @@ export WAYSTATION_HOME='/Users/brian/.waystation-oss'
 export WAYSTATION_PROJECT='brayniac/rezolus'
 ```
 
-Resolution: an explicit `--tree <name>` always wins. Otherwise the project is
-detected the same way the running server would detect it
-(`WAYSTATION_PROJECT`, else the `origin` remote of the working directory),
-and the roster is scanned for a tree claiming it, exact match or glob.
-Exactly one claimant wins; more than one is refused, naming every claimant —
-silently picking one would route traffic somewhere the operator did not
-choose. No project at all — a directory that is not a repository, or has no
-`origin` — falls back to the default tree.
+Resolution: an explicit `--tree <name>` always wins over project detection. It
+is refused if no tree in the roster has that name, and also if more than one
+does — nothing enforces uniqueness on `name`, whether it is left to default
+from the directory or set explicitly, so two trees sharing a name is a real
+roster state, not just operator error, and silently picking one of the
+matches would be exactly the kind of guess `--tree` exists to avoid.
+Otherwise the project is detected the same way the running server would
+detect it (`WAYSTATION_PROJECT`, else the `origin` remote of the working
+directory), and the roster is scanned for a tree claiming it, exact match or
+glob. Exactly one claimant wins; more than one is refused, naming every
+claimant — silently picking one would route traffic somewhere the operator
+did not choose. No project at all — a directory that is not a repository, or
+has no `origin` — falls back to the default tree.
 
 A roster entry that cannot be read (a missing `config.toml`, or one that
 fails to parse) is dropped with a warning rather than failing resolution
