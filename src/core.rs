@@ -66,15 +66,26 @@ fn project_from_path(tail: &str) -> Option<String> {
 
 /// Normalize a `WAYSTATION_PROJECT` override to the shape a remote yields:
 /// surrounding whitespace, wrapping `/` and a trailing `.git` removed, and a
-/// nested group path reduced to `owner/name`. A bare value with no slash is
-/// kept as given, so it can still name a channel. An empty or slash-only
-/// value means no project.
+/// nested group path reduced to `owner/name`. A value that still contains a
+/// slash after trimming but doesn't parse as `owner/name` is malformed, and
+/// is rejected exactly as a remote would be, rather than leaking through as
+/// a channel name. Only a value with no slash at all falls back to the bare
+/// value, so it can still name a channel. An empty or slash-only value means
+/// no project.
 fn normalize_project(p: &str) -> Option<String> {
     let t = p.trim().trim_matches('/').trim_end_matches(".git").trim_matches('/');
     if t.is_empty() {
         return None;
     }
-    Some(project_from_path(t).unwrap_or_else(|| t.to_string()))
+    if let Some(normal) = project_from_path(t) {
+        return Some(normal);
+    }
+    // Slashes but unparseable (e.g. a doubled slash leaving an empty owner) --
+    // malformed, and a remote would reject it too.
+    if t.contains('/') {
+        return None;
+    }
+    Some(t.to_string())
 }
 
 /// The channel that broadcasts to everyone working in a project.
@@ -353,6 +364,15 @@ mod tests {
         assert_eq!(normalize_project(""), None);
         // Surrounding whitespace is trimmed.
         assert_eq!(normalize_project(" owner/name ").as_deref(), Some("owner/name"));
+        // A doubled slash right before the final segment leaves an empty owner once
+        // split: malformed, not a bare value, so it must be rejected like a remote
+        // would reject it -- not leaked through the no-slash fallback. Pin the two
+        // detection paths together rather than asserting `None` on each separately.
+        assert_eq!(normalize_project("group//repo"), None);
+        assert_eq!(normalize_project("group//repo"), project_from_remote("https://host/group//repo"));
+        // A second, differently-shaped unparseable value: still has slashes, still
+        // rejected rather than falling back to a bare channel name.
+        assert_eq!(normalize_project("team//sub//repo"), None);
     }
 
     #[test]
