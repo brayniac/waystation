@@ -227,12 +227,21 @@ fn main() -> Result<()> {
             if tree_name.is_some() {
                 cfg.tree.name = tree_name;
             }
+            let mut claim_msg = None;
             if let Some(p) = project {
-                if tree::add_claim(&mut cfg.tree.projects, &p) {
-                    println!("claimed {p}");
+                let normalized = tree::normalize_claim(&p)?;
+                let added = tree::add_claim(&mut cfg.tree.projects, &normalized);
+                claim_msg = Some(if normalized == p {
+                    if added {
+                        format!("claimed {normalized}")
+                    } else {
+                        format!("{normalized} is already claimed")
+                    }
+                } else if added {
+                    format!("claimed {normalized} (normalized from {p})")
                 } else {
-                    println!("{p} was already claimed");
-                }
+                    format!("{normalized} is already claimed (normalized from {p})")
+                });
             }
             if let Some(name) = realm {
                 let entry = cfg.realm.entry(name.clone()).or_insert_with(|| RealmConfig {
@@ -259,6 +268,9 @@ fn main() -> Result<()> {
             }
             cfg.validate()?;
             cfg.save()?;
+            if let Some(msg) = claim_msg {
+                println!("{msg}");
+            }
             println!("wrote {}", config::config_path().display());
             Ok(())
         }

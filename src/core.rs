@@ -72,7 +72,7 @@ fn project_from_path(tail: &str) -> Option<String> {
 /// a channel name. Only a value with no slash at all falls back to the bare
 /// value, so it can still name a channel. An empty or slash-only value means
 /// no project.
-fn normalize_project(p: &str) -> Option<String> {
+pub(crate) fn normalize_project(p: &str) -> Option<String> {
     let t = p.trim().trim_matches('/').trim_end_matches(".git").trim_matches('/');
     if t.is_empty() {
         return None;

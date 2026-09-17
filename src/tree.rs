@@ -297,14 +297,28 @@ pub fn env_exports(tree: &Tree, project: Option<&str>) -> Result<String> {
     Ok(out)
 }
 
-/// Add a project claim, unless an equal one is already present.
+/// Add a project claim, unless an equal one is already present. Comparison
+/// ignores surrounding whitespace and ASCII case, matching `claim_matches`,
+/// so the two never disagree about whether a claim is a duplicate.
 /// Returns whether it was added. `setup` calls this on the config it already holds.
 pub fn add_claim(projects: &mut Vec<String>, project: &str) -> bool {
-    if projects.iter().any(|c| c.eq_ignore_ascii_case(project)) {
+    let key = project.trim().to_lowercase();
+    if projects.iter().any(|c| c.trim().to_lowercase() == key) {
         return false;
     }
     projects.push(project.to_string());
     true
+}
+
+/// Normalize a claim typed at `setup --project` to the shape a resolved
+/// project takes, via the same normalization `detect_project` applies, so a
+/// claim can never be written in a shape a project can never match. A glob
+/// (`owner/*`) passes through unchanged aside from the same nested-group
+/// collapse an `owner/name` claim gets, since `*` is just a name segment.
+pub fn normalize_claim(raw: &str) -> Result<String> {
+    crate::core::normalize_project(raw).with_context(|| {
+        format!("`{raw}` is not a valid project claim; expected `owner/name` or `owner/*`")
+    })
 }
 
 #[cfg(test)]
@@ -812,5 +826,41 @@ mod tests {
             projects,
             vec!["brayniac/rezolus".to_string(), "brayniac/llm-perf".to_string()]
         );
+    }
+
+    #[test]
+    fn add_claim_recognizes_a_whitespace_padded_duplicate() {
+        // add_claim's dedup must agree with claim_matches's, which ignores
+        // surrounding whitespace as well as case.
+        let mut projects: Vec<String> = vec![];
+        assert!(add_claim(&mut projects, "brayniac/rezolus"));
+        assert!(!add_claim(&mut projects, " brayniac/rezolus"), "leading whitespace is still a duplicate");
+        assert_eq!(projects, vec!["brayniac/rezolus".to_string()]);
+    }
+
+    #[test]
+    fn normalize_claim_leaves_a_glob_unchanged() {
+        assert_eq!(normalize_claim("acme-corp/*").unwrap(), "acme-corp/*");
+    }
+
+    #[test]
+    fn normalize_claim_collapses_a_nested_group_glob() {
+        assert_eq!(normalize_claim("group/subgroup/*").unwrap(), "subgroup/*");
+    }
+
+    #[test]
+    fn normalize_claim_strips_dot_git() {
+        assert_eq!(normalize_claim("owner/repo.git").unwrap(), "owner/repo");
+    }
+
+    #[test]
+    fn normalize_claim_collapses_a_nested_group() {
+        assert_eq!(normalize_claim("group/subgroup/repo").unwrap(), "subgroup/repo");
+    }
+
+    #[test]
+    fn normalize_claim_rejects_a_malformed_value() {
+        assert!(normalize_claim("group//repo").is_err());
+        assert!(normalize_claim("").is_err());
     }
 }
