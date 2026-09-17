@@ -233,6 +233,16 @@ pub fn env_exports(tree: &Tree, project: Option<&str>) -> String {
     out
 }
 
+/// Add a project claim, unless an equal one is already present.
+/// Returns whether it was added. `setup` calls this on the config it already holds.
+pub fn add_claim(projects: &mut Vec<String>, project: &str) -> bool {
+    if projects.iter().any(|c| c.eq_ignore_ascii_case(project)) {
+        return false;
+    }
+    projects.push(project.to_string());
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,5 +589,18 @@ mod tests {
     fn exports_omit_the_project_when_there_is_none() {
         let t = tree("default", &[], true);
         assert_eq!(env_exports(&t, None), "export WAYSTATION_HOME=/trees/default\n");
+    }
+
+    #[test]
+    fn claiming_a_project_is_idempotent() {
+        let mut projects: Vec<String> = vec![];
+        assert!(add_claim(&mut projects, "brayniac/rezolus"));
+        assert!(!add_claim(&mut projects, "brayniac/rezolus"));
+        assert!(!add_claim(&mut projects, "Brayniac/Rezolus"), "claims are case-insensitive");
+        assert!(add_claim(&mut projects, "brayniac/llm-perf"));
+        assert_eq!(
+            projects,
+            vec!["brayniac/rezolus".to_string(), "brayniac/llm-perf".to_string()]
+        );
     }
 }

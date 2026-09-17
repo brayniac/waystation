@@ -48,6 +48,12 @@ enum Cmd {
         agent: Option<String>,
         #[arg(long)]
         swarm: Option<String>,
+        /// Claim a project for this tree, e.g. `brayniac/rezolus` or `acme-corp/*`.
+        #[arg(long)]
+        project: Option<String>,
+        /// Name this tree, for `waystation tree ls` and error messages.
+        #[arg(long = "tree-name")]
+        tree_name: Option<String>,
         /// Realm name to add/update (requires --remote).
         #[arg(long)]
         realm: Option<String>,
@@ -204,7 +210,7 @@ fn main() -> Result<()> {
             _ => "cli".to_string(),
         });
     match cli.cmd {
-        Cmd::Setup { operator, agent, swarm, realm, remote, trust, subscribe } => {
+        Cmd::Setup { operator, agent, swarm, project, tree_name, realm, remote, trust, subscribe } => {
             let mut cfg = Config::load()?;
             if let Some(o) = operator {
                 cfg.identity.operator = o;
@@ -214,6 +220,16 @@ fn main() -> Result<()> {
             }
             if swarm.is_some() {
                 cfg.identity.swarm = swarm;
+            }
+            if tree_name.is_some() {
+                cfg.tree.name = tree_name;
+            }
+            if let Some(p) = project {
+                if tree::add_claim(&mut cfg.tree.projects, &p) {
+                    println!("claimed {p}");
+                } else {
+                    println!("{p} was already claimed");
+                }
             }
             if let Some(name) = realm {
                 let entry = cfg.realm.entry(name.clone()).or_insert_with(|| RealmConfig {
