@@ -24,7 +24,7 @@ pub struct Core {
 /// `CLAUDE_PROJECT_DIR` (or the current directory). Returns `owner/name`.
 pub fn detect_project() -> Option<String> {
     if let Ok(p) = std::env::var("WAYSTATION_PROJECT") {
-        return if p.is_empty() { None } else { Some(p) };
+        return normalize_project(&p);
     }
     let dir = std::env::var("CLAUDE_PROJECT_DIR")
         .ok()
@@ -50,12 +50,75 @@ pub fn project_from_remote(url: &str) -> Option<String> {
         no_scheme.split_once('/').map(|(_, r)| r).unwrap_or(no_scheme)
     };
     let tail = tail.trim_matches('/').trim_end_matches(".git");
+    project_from_path(tail)
+}
+
+/// `owner/name` from a repository path tail, collapsing a nested group path
+/// to its immediate owner. `None` if either half is missing.
+fn project_from_path(tail: &str) -> Option<String> {
     let (owner, name) = tail.rsplit_once('/')?;
     let owner = owner.rsplit('/').next().unwrap_or(owner);
     if name.is_empty() || owner.is_empty() {
         return None;
     }
     Some(format!("{owner}/{name}"))
+}
+
+/// Normalize a `WAYSTATION_PROJECT` override (or a `setup --project` claim —
+/// see `tree::normalize_claim`, which is a thin wrapper over this) to the
+/// shape a remote yields: surrounding whitespace, wrapping `/` and a
+/// trailing `.git` removed, and a nested group path reduced to `owner/name`.
+///
+/// This is the single normalization both an override and a claim go through,
+/// so the two can never disagree about the shape of the same repository —
+/// deliberately, since they used to (an SCP-style override and an identical
+/// SCP-style claim normalized differently, silently misrouting a session).
+///
+/// A value shaped like a remote URL (see `looks_like_remote_url`) is routed
+/// through `project_from_remote`, the same parser a real remote goes
+/// through. Anything else: a value that still contains a slash after
+/// trimming but doesn't parse as `owner/name` is malformed, and is rejected
+/// exactly as a remote would be, rather than leaking through as a channel
+/// name. Only a value with no slash at all falls back to the bare value, so
+/// it can still name a channel. An empty or slash-only value means no
+/// project.
+pub(crate) fn normalize_project(p: &str) -> Option<String> {
+    let t = p.trim();
+    if looks_like_remote_url(t) {
+        return project_from_remote(t);
+    }
+    let t = t.trim_matches('/').trim_end_matches(".git").trim_matches('/');
+    if t.is_empty() {
+        return None;
+    }
+    if let Some(normal) = project_from_path(t) {
+        return Some(normal);
+    }
+    // Slashes but unparseable (e.g. a doubled slash leaving an empty owner) --
+    // malformed, and a remote would reject it too.
+    if t.contains('/') {
+        return None;
+    }
+    Some(t.to_string())
+}
+
+/// Whether `s` is shaped like a git remote URL rather than a bare `owner/name`
+/// or `owner/*` glob: an explicit `scheme://` (`https://…`), or a `:` that
+/// appears before any `/` (the SCP-style `user@host:owner/repo`, which has
+/// no `://`). A claim, glob, or channel name never contains a `:`, so this
+/// correctly fires on every realistic remote URL. It also fires on two
+/// inputs that are not one — a Windows-style path (`C:\repos\thing`) and a
+/// `host:port/owner/repo` string — but neither is a plausible project value,
+/// so the heuristic is left as-is rather than special-cased for them.
+fn looks_like_remote_url(s: &str) -> bool {
+    if s.contains("://") {
+        return true;
+    }
+    match (s.find(':'), s.find('/')) {
+        (Some(colon), Some(slash)) => colon < slash,
+        (Some(_), None) => true,
+        _ => false,
+    }
 }
 
 /// The channel that broadcasts to everyone working in a project.
@@ -298,6 +361,74 @@ home, post internally and ask a human to decide. When in doubt, do not send.",
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_group_overrides_normalize_like_remotes() {
+        // A nested group path reduces to the immediate owner and the name.
+        assert_eq!(normalize_project("group/subgroup/repo").as_deref(), Some("subgroup/repo"));
+        // An already-normal project, and a bare value used as a channel name,
+        // are both left exactly as given.
+        assert_eq!(normalize_project("owner/name").as_deref(), Some("owner/name"));
+        assert_eq!(normalize_project("bare").as_deref(), Some("bare"));
+        // A trailing slash is trimmed, not left dangling as an empty segment.
+        assert_eq!(normalize_project("trailing/").as_deref(), Some("trailing"));
+        // The override and the remote agree about the same repository.
+        assert_eq!(
+            normalize_project("group/subgroup/repo"),
+            project_from_remote("https://gitlab.com/group/subgroup/repo.git")
+        );
+        // A pasted remote URL's `.git` suffix normalizes the same as the remote form.
+        assert_eq!(
+            normalize_project("group/subgroup/repo.git").as_deref(),
+            Some("subgroup/repo")
+        );
+        assert_eq!(
+            normalize_project("group/subgroup/repo.git"),
+            project_from_remote("https://gitlab.com/group/subgroup/repo.git")
+        );
+        // A trailing slash after a nested group path is trimmed before reducing.
+        assert_eq!(normalize_project("group/subgroup/repo/").as_deref(), Some("subgroup/repo"));
+        // Four or more segments still reduce to just the immediate owner and name.
+        assert_eq!(normalize_project("a/b/c/d").as_deref(), Some("c/d"));
+        // A malformed leading `//` is trimmed away rather than yielding an empty owner.
+        assert_eq!(normalize_project("//repo").as_deref(), Some("repo"));
+        // Slash-only or empty input means no project.
+        assert_eq!(normalize_project("/"), None);
+        assert_eq!(normalize_project(""), None);
+        // Surrounding whitespace is trimmed.
+        assert_eq!(normalize_project(" owner/name ").as_deref(), Some("owner/name"));
+        // A doubled slash right before the final segment leaves an empty owner once
+        // split: malformed, not a bare value, so it must be rejected like a remote
+        // would reject it -- not leaked through the no-slash fallback. Pin the two
+        // detection paths together rather than asserting `None` on each separately.
+        assert_eq!(normalize_project("group//repo"), None);
+        assert_eq!(normalize_project("group//repo"), project_from_remote("https://host/group//repo"));
+        // A second, differently-shaped unparseable value: still has slashes, still
+        // rejected rather than falling back to a bare channel name.
+        assert_eq!(normalize_project("team//sub//repo"), None);
+    }
+
+    #[test]
+    fn normalize_project_routes_url_shaped_overrides_like_a_remote() {
+        // A WAYSTATION_PROJECT override pasted straight from `git remote
+        // get-url origin` -- SCP or https, with or without `.git` -- must
+        // resolve exactly as detect_project resolves a live remote.
+        assert_eq!(normalize_project("git@github.com:owner/repo.git").as_deref(), Some("owner/repo"));
+        assert_eq!(normalize_project("git@github.com:owner/repo").as_deref(), Some("owner/repo"));
+        assert_eq!(normalize_project("https://github.com/owner/repo.git").as_deref(), Some("owner/repo"));
+        assert_eq!(normalize_project("owner/repo").as_deref(), Some("owner/repo"));
+    }
+
+    #[test]
+    fn normalize_project_windows_path_no_longer_survives_as_bare() {
+        // Behaviour change: a `:` before any `/` is treated as the SCP
+        // remote-URL shape, so a Windows-style path -- which used to fall
+        // through to the bare-value branch and survive as the channel name
+        // `C:\repos\thing` -- now fails to parse as a remote and is `None`.
+        // Not a realistic `--project`/`WAYSTATION_PROJECT` value, so this is
+        // an acceptable, and more correct, change rather than a regression.
+        assert_eq!(normalize_project(r"C:\repos\thing"), None);
+    }
 
     #[test]
     fn project_parsing() {

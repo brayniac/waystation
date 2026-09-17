@@ -117,7 +117,115 @@ Suspect the middleware reorder. Not blocking, but whoever owns auth should look.
 - Heartbeats are deliberately slow (default every 10 min) to limit commit churn.
   Liveness is inferred: an agent is "active" if `last_seen` < 2× heartbeat.
 
-### 3.3 Tasks and claims (lease, not lock)
+### 3.3 Trees
+
+A **tree** is one `WAYSTATION_HOME` directory: one identity, one set of
+mounted realms, one clone set, one cursor file, one daemon socket. The
+default tree is `~/.waystation`. An operator who works across more than one
+realm world — personal projects, a work realm, a client engagement — runs one
+tree per world, selected by `WAYSTATION_HOME` before the process starts.
+
+Only one realm per tree may have `trust = "home"` (`Config::validate` rejects
+a second, §12.1), and posting to an `external` realm is refused outright until
+the two-phase confirm flow in §12.5 lands. So one tree gives the operator
+exactly one realm they can currently write to; everything else mounted
+alongside it is readable only. That is why **separate trees, not several
+writable realms in one tree, are how two worlds stay apart**: a single
+session holding both a work realm and a personal realm keeps both in one
+context window, where the only barrier between them is the guidance text
+appended to the server's instructions (§12.5). Compaction, a summary, or a
+dispatched subagent can carry content across a barrier made of instructions.
+Two trees are two processes with two clone sets and two daemon sockets — a
+process boundary has no equivalent failure mode. This is not a permanent
+restriction: if §12.5 lands, or the one-home rule relaxes, an operator may
+choose to mount more in one tree, but trees remain the real isolation
+boundary regardless of what happens to either.
+
+Each tree declares itself and what it claims in a `[tree]` table:
+
+```toml
+[tree]
+name = "oss"
+projects = ["brayniac/rezolus", "brayniac/llm-perf"]
+```
+
+- `name` labels the tree in `waystation tree ls` output and in error
+  messages. It is not identity, so it does not live in `[identity]`. A tree
+  with no `name` is named after its directory: a leading dot is dropped and a
+  `waystation-` prefix is stripped, so `~/.waystation-work` is `work`; if
+  nothing is left after stripping — `~/.waystation`, or the pathological
+  `~/.waystation-` — the tree is `default`.
+- `projects` holds `owner/name` entries in the shape `detect_project`
+  produces, and `owner/*` globs. A claim typed at `setup --project` and a
+  project detected from `WAYSTATION_PROJECT` or a git remote pass through the
+  same normalization (a trailing `owner/repo.git` becomes `owner/repo`, a
+  nested group path collapses to its last two segments), so a claim can never
+  be written in a shape a resolved project could never match.
+
+The default tree additionally holds the roster of every other tree on the
+machine:
+
+```toml
+[tree]
+name = "home"
+siblings = ["~/.waystation-work", "~/.waystation-oss"]
+```
+
+`siblings` is meaningful only in the default tree, which is where the roster
+lives — `waystation tree add`/`rm` always edit it there, whatever
+`WAYSTATION_HOME` currently points at. Each entry is stored exactly as the
+operator typed it, `~/.waystation-work` and all, rather than expanded to an
+absolute, machine-specific path, so the config stays portable across machines
+that share a home-directory layout. The roster itself is the default tree
+together with every sibling it can read.
+
+`waystation env` resolves the tree for the current shell and prints it as
+shell exports:
+
+```
+$ waystation env
+export WAYSTATION_HOME='/Users/brian/.waystation-oss'
+export WAYSTATION_PROJECT='brayniac/rezolus'
+```
+
+Resolution: an explicit `--tree <name>` always wins over project detection. It
+is refused if no tree in the roster has that name, and also if more than one
+does — nothing enforces uniqueness on `name`, whether it is left to default
+from the directory or set explicitly, so two trees sharing a name is a real
+roster state, not just operator error, and silently picking one of the
+matches would be exactly the kind of guess `--tree` exists to avoid.
+Otherwise the project is detected the same way the running server would
+detect it (`WAYSTATION_PROJECT`, else the `origin` remote of the working
+directory), and the roster is scanned for a tree claiming it, exact match or
+glob. Exactly one claimant wins; more than one is refused, naming every
+claimant — silently picking one would route traffic somewhere the operator
+did not choose. No project at all — a directory that is not a repository, or
+has no `origin` — falls back to the default tree.
+
+A roster entry that cannot be read (a missing `config.toml`, or one that
+fails to parse) is dropped with a warning rather than failing resolution
+outright, so a stale or temporarily broken sibling never breaks the launcher
+for every other tree. The default tree's own config is the one exception: it
+fails loudly, since there is no fallback below it. But a broken sibling
+changes what "no claimant" is allowed to mean: if nothing readable claims the
+project *and* a tree could not be read, that unreadable tree might have been
+the claimant, and falling back to the default would silently misroute the
+session into the wrong realm world. `waystation env` refuses in that case,
+naming the broken tree and how to fix it (`waystation tree rm <path>`, or
+`--tree` to choose deliberately). With no project detected at all, a broken
+sibling is irrelevant and resolution still falls back to the default,
+silently, same as ever.
+
+Because its only consumer is `eval "$(waystation env)"`, every value `env`
+prints is POSIX-quoted, and a value containing a control character is refused
+outright rather than quoted through — see the README for the wrapper this is
+meant to run behind.
+
+A hidden `--root <path>` overrides where resolution starts; it exists for
+tests so they never touch the operator's real home directory. Every other
+subcommand still reads `WAYSTATION_HOME` and ignores `--root`.
+
+### 3.4 Tasks and claims (lease, not lock)
 
 Claiming is racy across agents by nature. Resolution is deterministic and needs
 no coordinator:
@@ -130,14 +238,14 @@ no coordinator:
 3. Losers see they lost on their next poll and back off. Winners renew the lease
    in `updates/`; an expired lease is reclaimable.
 
-### 3.4 Escalations
+### 3.5 Escalations
 
 `escalations/<ulid>.md` is a message with `kind: escalation` that is delivered to
 every agent regardless of channel subscriptions, and to humans through the
 GitHub UI. Severity `blocking` is the only thing Waystation will interrupt for
 (see §5).
 
-### 3.5 Channels
+### 3.6 Channels
 
 Channels are directories; creating one is `mkdir`. `waystation.toml` may declare
 well-known channels and per-channel retention. Conventions:

@@ -8,12 +8,14 @@ mod model;
 mod poller;
 mod repo;
 mod store;
+mod tree;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use config::{Config, RealmConfig, Trust};
 use core::{Core, PostRequest};
 use model::{Kind, Priority};
+use std::path::PathBuf;
 use std::sync::Arc;
 use ulid::Ulid;
 
@@ -30,6 +32,14 @@ struct Cli {
     /// Use a private clone instead of the per-machine daemon.
     #[arg(long, env = "WAYSTATION_STANDALONE", global = true)]
     standalone: bool,
+    /// Where tree resolution starts: which tree claims the repo a session
+    /// runs in. Testing hook; defaults to `~/.waystation`. Honoured by `env`
+    /// and `tree` only — every other subcommand still reads `WAYSTATION_HOME`,
+    /// even though clap accepts this flag on all of them. Not to be confused
+    /// with `setup --home`, which is which tree gets *configured* — a
+    /// different question from which tree resolution starts from.
+    #[arg(long, global = true, hide = true)]
+    root: Option<std::path::PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -44,6 +54,12 @@ enum Cmd {
         agent: Option<String>,
         #[arg(long)]
         swarm: Option<String>,
+        /// Claim a project for this tree, e.g. `brayniac/rezolus` or `acme-corp/*`.
+        #[arg(long)]
+        project: Option<String>,
+        /// Name this tree, for `waystation tree ls` and error messages.
+        #[arg(long = "tree-name")]
+        tree_name: Option<String>,
         /// Realm name to add/update (requires --remote).
         #[arg(long)]
         realm: Option<String>,
@@ -53,6 +69,14 @@ enum Cmd {
         trust: Option<Trust>,
         #[arg(long, value_delimiter = ',')]
         subscribe: Option<Vec<String>>,
+        /// Which tree to configure: the `WAYSTATION_HOME` directory `setup`
+        /// writes to. Defaults to `$WAYSTATION_HOME`. Not the same as the
+        /// top-level `--root`: `--root` is where tree *resolution* starts
+        /// (which tree claims a repo), `--home` is which tree you are
+        /// *configuring*. Without it, running `setup` with `WAYSTATION_HOME`
+        /// unset silently writes to the operator's real `~/.waystation`.
+        #[arg(long)]
+        home: Option<std::path::PathBuf>,
     },
     /// Clone every realm and create the initial layout in empty ones.
     Init,
@@ -105,6 +129,17 @@ enum Cmd {
     Agents,
     /// Fetch every realm once.
     Sync,
+    /// Resolve the tree for this directory and print shell exports.
+    Env {
+        /// Use this tree instead of the one claiming this repository.
+        #[arg(long)]
+        tree: Option<String>,
+    },
+    /// Inspect and maintain the trees on this machine.
+    Tree {
+        #[command(subcommand)]
+        cmd: TreeCmd,
+    },
     /// Run the MCP server on stdio.
     Serve,
     /// The per-machine daemon that owns the clones and polls the remotes.
@@ -128,6 +163,16 @@ enum RealmCmd {
     Ls,
     /// Remove a realm from the config and delete its local clones.
     Rm { name: String },
+}
+
+#[derive(Subcommand)]
+enum TreeCmd {
+    /// List the trees, what they claim, and which one wins here.
+    Ls,
+    /// Add a tree to the roster.
+    Add { path: PathBuf },
+    /// Remove a tree from the roster. The tree's own directory is left alone.
+    Rm { path: PathBuf },
 }
 
 fn parse_trust(s: &str) -> Result<Trust, String> {
@@ -179,8 +224,9 @@ fn main() -> Result<()> {
             _ => "cli".to_string(),
         });
     match cli.cmd {
-        Cmd::Setup { operator, agent, swarm, realm, remote, trust, subscribe } => {
-            let mut cfg = Config::load()?;
+        Cmd::Setup { operator, agent, swarm, project, tree_name, realm, remote, trust, subscribe, home } => {
+            let home_dir = home.unwrap_or_else(config::home_dir);
+            let mut cfg = Config::load_from(&home_dir)?;
             if let Some(o) = operator {
                 cfg.identity.operator = o;
             }
@@ -189,6 +235,31 @@ fn main() -> Result<()> {
             }
             if swarm.is_some() {
                 cfg.identity.swarm = swarm;
+            }
+            if tree_name.is_some() {
+                cfg.tree.name = tree_name;
+            }
+            let mut claim_msg = None;
+            if let Some(p) = project {
+                let normalized = tree::normalize_claim(&p)?;
+                let added = tree::add_claim(&mut cfg.tree.projects, &normalized);
+                if !normalized.contains('/') {
+                    eprintln!(
+                        "warning: claim `{normalized}` has no `/`; it will only match a bare \
+                         WAYSTATION_PROJECT override, not a repository detected from a git remote"
+                    );
+                }
+                claim_msg = Some(if normalized == p {
+                    if added {
+                        format!("claimed {normalized}")
+                    } else {
+                        format!("{normalized} is already claimed")
+                    }
+                } else if added {
+                    format!("claimed {normalized} (normalized from {p})")
+                } else {
+                    format!("{normalized} is already claimed (normalized from {p})")
+                });
             }
             if let Some(name) = realm {
                 let entry = cfg.realm.entry(name.clone()).or_insert_with(|| RealmConfig {
@@ -214,8 +285,11 @@ fn main() -> Result<()> {
                 }
             }
             cfg.validate()?;
-            cfg.save()?;
-            println!("wrote {}", config::config_path().display());
+            cfg.save_to(&home_dir)?;
+            if let Some(msg) = claim_msg {
+                println!("{msg}");
+            }
+            println!("wrote {}", home_dir.join("config.toml").display());
             Ok(())
         }
         Cmd::Realm { cmd: RealmCmd::Ls } => {
@@ -372,6 +446,59 @@ fn main() -> Result<()> {
             daemon::control("shutdown")?;
             println!("daemon stopping");
             Ok(())
+        }
+        Cmd::Env { tree: forced } => {
+            let root = cli.root.clone().unwrap_or_else(config::default_root);
+            let roster = tree::Roster::load(&root)?;
+            let project = core::detect_project();
+            let chosen = roster.resolve(project.as_deref(), forced.as_deref())?;
+            let exports = tree::env_exports(chosen, project.as_deref())?;
+            print!("{exports}");
+            Ok(())
+        }
+        Cmd::Tree { cmd } => {
+            let root = cli.root.clone().unwrap_or_else(config::default_root);
+            match cmd {
+                TreeCmd::Ls => {
+                    let roster = tree::Roster::load(&root)?;
+                    let project = core::detect_project();
+                    let resolved = roster.resolve(project.as_deref(), None);
+                    let chosen = resolved.as_ref().ok().map(|t| t.path.clone());
+                    for t in &roster.trees {
+                        let here = if Some(&t.path) == chosen.as_ref() { "<- here" } else { "" };
+                        println!(
+                            "{}\t{}\tdefault={}\tprojects={}\t{here}",
+                            t.name,
+                            t.path.display(),
+                            if t.is_default { "yes" } else { "no" },
+                            if t.projects.is_empty() { "-".into() } else { t.projects.join(",") },
+                        );
+                    }
+                    for w in &roster.warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    if let Err(e) = resolved {
+                        eprintln!("note: no tree resolves here: {e}");
+                    }
+                    Ok(())
+                }
+                TreeCmd::Add { path } => {
+                    if tree::roster_add(&root, &path)? {
+                        println!("added {}", path.display());
+                    } else {
+                        println!("{} is already in the roster", path.display());
+                    }
+                    Ok(())
+                }
+                TreeCmd::Rm { path } => {
+                    if tree::roster_rm(&root, &path)? {
+                        println!("removed {}", path.display());
+                    } else {
+                        println!("{} is not in the roster", path.display());
+                    }
+                    Ok(())
+                }
+            }
         }
         Cmd::Serve => {
             let core = Arc::new(open(cli.harness.clone(), session.clone(), cli.standalone)?);

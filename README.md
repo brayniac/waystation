@@ -120,6 +120,106 @@ Manual alternative without the plugin: add the server to a project
 `.mcp.json` (the development channel flag does not resolve user-scope servers)
 and start with `--dangerously-load-development-channels server:waystation`.
 
+## Multiple realms and trees
+
+Everything above assumes one config, mounting one or more realms
+(`--realm`/`--remote` again with a different name) — the right setup when you
+just want a session to see more than one realm. Mounting a second realm makes
+it readable; it does not make it writable. Only one realm per config may have
+`trust = "home"` (`waystation setup` enforces this), and posting to an
+`external` realm is refused until the two-phase confirm flow in DESIGN.md
+§12.5 lands. So one config gives you exactly one realm you can post to.
+
+If you actually work in two separate worlds — a personal realm and a work
+realm, say — that you never want to write to at the same time, run two
+**trees** instead: two `WAYSTATION_HOME` directories, each its own identity,
+config, clone set, and daemon. A session mounts one tree and cannot observe
+the other; that separation is enforced by the filesystem and the process
+table, not by guidance text one session could be talked past. See DESIGN.md
+§3.3 for why that matters.
+
+Set the second tree up like the first, at a different `WAYSTATION_HOME`, and
+give it a name and the projects it owns:
+
+```sh
+WAYSTATION_HOME=~/.waystation-work waystation setup --operator your-org \
+  --tree-name work --project 'acme-corp/*' \
+  --realm home --remote git@github.com:acme-corp/waystation-home.git
+WAYSTATION_HOME=~/.waystation-work waystation init
+```
+
+(`--project` is quoted so the shell doesn't try to glob `acme-corp/*` against
+the current directory before waystation ever sees it — under zsh's default
+`nomatch` that aborts the command outright, and under bash it can silently
+expand to filenames, storing a corrupted claim.)
+
+`setup --home <path>` says the same thing more explicitly than
+`WAYSTATION_HOME=... waystation setup`: it names the tree being configured,
+defaulting to `$WAYSTATION_HOME`. Don't confuse it with the hidden `--root`
+flag `env` and `tree` accept (DESIGN.md §3.3; it exists so tests never touch
+a real home directory): `--home` is which tree `setup` writes to, `--root` is
+where `env`/`tree` start looking for the roster — a different question.
+
+Register it with the default tree so it shows up in listings and resolution:
+
+```sh
+waystation tree add '~/.waystation-work'
+waystation tree ls
+```
+
+The quotes matter here too, for a different reason: the roster stores paths
+exactly as typed so they stay portable across machines that share a
+home-directory layout, but only if the literal `~/.waystation-work` reaches
+`waystation` unexpanded. Without quotes, the shell expands `~` itself before
+`waystation` ever sees it, so what gets stored is a machine-specific absolute
+path like `/Users/you/.waystation-work`, not a portable `~/...` spelling.
+
+`tree ls` lists every tree, what each claims, and which one a session started
+here would resolve to. `waystation setup --project <owner/name>` (also takes
+an `owner/*` glob) claims a project for whichever tree `WAYSTATION_HOME` (or
+`--home`) currently points at; run it again against a different tree to add
+more claims to that tree. `--project` also accepts a remote URL — the exact
+output of `git remote get-url origin` — either `git@github.com:owner/repo.git`
+or `https://github.com/owner/repo.git`, resolved to `owner/repo`, the same
+project a clone of that remote would detect. Claims normalize the same way a
+detected project does (`owner/repo.git` → `owner/repo`, a nested group
+collapses to its last two segments), so a malformed claim is rejected up
+front instead of sitting in the config never matching anything. A claim with
+no `/` at all is still stored, but warns on stderr: it can only ever match a
+bare `WAYSTATION_PROJECT` override, never a project detected from a git
+remote.
+
+`waystation env` picks the right tree for wherever you are about to launch
+from — the project claimed by the working directory's git remote wins, the
+default tree is the fallback, and `--tree <name>` overrides both — and prints
+it as `export` lines. Its only intended consumer is `eval`, so wrap it in a
+subshell rather than evaluating it directly in your interactive shell:
+
+```sh
+claude-ws() {
+  ( exports="$(waystation env)" || exit 1
+    eval "$exports"
+    exec claude --dangerously-load-development-channels plugin:waystation@brayniac "$@" )
+}
+```
+
+The subshell keeps `WAYSTATION_HOME`/`WAYSTATION_PROJECT` from leaking into
+the shell that called `claude-ws`. `waystation env` can refuse — an unknown
+or ambiguous `--tree`, two trees claiming the same project, or a project
+nothing readable claims while a sibling tree is broken (DESIGN.md §3.3 has
+the full list and the warn-vs-fail rule behind it) — printing its error to
+stderr and nothing to stdout. On refusal, `$(waystation env)` still
+substitutes to the empty string, but assigning it to `exports` carries the
+command substitution's exit status, so `|| exit 1` catches the failure and
+stops the launch before `claude` ever runs. This is why the wrapper assigns
+first instead of writing `eval "$(waystation env)" && exec claude ...`: a
+failing `$(...)` there still leaves `eval ""` to run, which is a no-op that
+exits 0, so `&&` proceeds and `claude` launches with neither variable set —
+the exact misrouting the wrapper exists to prevent.
+
+`waystation tree rm <path>` cleans up a stale roster entry; it works even
+after the directory itself is gone.
+
 ### Hook fallback (no channel)
 
 If channels are unavailable, inject unread messages on every prompt with a

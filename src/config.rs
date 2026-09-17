@@ -15,6 +15,8 @@ pub struct Config {
     pub poll: Poll,
     #[serde(default)]
     pub realm: BTreeMap<String, RealmConfig>,
+    #[serde(default)]
+    pub tree: TreeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -28,6 +30,25 @@ pub struct Identity {
     /// Swarm / team label attached to every message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swarm: Option<String>,
+}
+
+/// This tree: what it is called and which projects belong to it.
+///
+/// A tree is one `WAYSTATION_HOME`: one identity, one set of realms, one clone
+/// set, one daemon. `siblings` is meaningful only in the default tree, which is
+/// where the roster lives.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TreeConfig {
+    /// Labels the tree in `waystation tree ls` output and in error messages.
+    /// Not an identity; purely a human-facing label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// `owner/name` entries, as `detect_project` produces them, and `owner/*` globs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<String>,
+    /// Other trees on this machine. Read from the default tree only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub siblings: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,22 +142,37 @@ pub struct RealmConfig {
     pub local: Option<PathBuf>,
 }
 
+/// `~/.waystation`, with no regard for `WAYSTATION_HOME`.
+///
+/// Shared by `home_dir` and `default_root` so the two can only ever differ in
+/// whether they consult the env var — not accidentally drift on the fallback
+/// path or the directory name too.
+fn default_home() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".waystation")
+}
+
 pub fn home_dir() -> PathBuf {
     if let Ok(p) = std::env::var("WAYSTATION_HOME") {
         return PathBuf::from(p);
     }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".waystation")
+    default_home()
 }
 
-pub fn config_path() -> PathBuf {
-    home_dir().join("config.toml")
+/// Where tree resolution starts. Never `WAYSTATION_HOME`: an inherited value
+/// would make a shell that once launched one tree keep resolving to it.
+pub fn default_root() -> PathBuf {
+    default_home()
 }
 
 impl Config {
     pub fn load() -> Result<Self> {
-        let path = config_path();
+        Self::load_from(&home_dir())
+    }
+
+    /// Load the config of the tree rooted at `dir`. A tree with no config file
+    /// is a valid empty tree, not an error.
+    pub fn load_from(dir: &Path) -> Result<Self> {
+        let path = dir.join("config.toml");
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -148,10 +184,13 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = config_path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        self.save_to(&home_dir())
+    }
+
+    pub fn save_to(&self, dir: &Path) -> Result<()> {
+        let path = dir.join("config.toml");
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating {}", dir.display()))?;
         std::fs::write(&path, toml::to_string_pretty(self)?)
             .with_context(|| format!("writing {}", path.display()))?;
         Ok(())
@@ -284,4 +323,43 @@ pub fn sanitize(s: &str) -> String {
 
 pub fn ensure_dir(p: &Path) -> Result<()> {
     std::fs::create_dir_all(p).with_context(|| format!("creating {}", p.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tree_table_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.identity.operator = "brayniac".into();
+        cfg.tree.name = Some("oss".into());
+        cfg.tree.projects = vec!["brayniac/rezolus".into()];
+        cfg.tree.siblings = vec![PathBuf::from("~/.waystation-work")];
+        cfg.save_to(dir.path()).unwrap();
+
+        let back = Config::load_from(dir.path()).unwrap();
+        assert_eq!(back.tree.name.as_deref(), Some("oss"));
+        assert_eq!(back.tree.projects, vec!["brayniac/rezolus".to_string()]);
+        assert_eq!(back.tree.siblings, vec![PathBuf::from("~/.waystation-work")]);
+    }
+
+    #[test]
+    fn missing_tree_table_defaults_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[identity]\noperator = \"x\"\n").unwrap();
+
+        let cfg = Config::load_from(dir.path()).unwrap();
+        assert_eq!(cfg.tree.name, None);
+        assert!(cfg.tree.projects.is_empty());
+        assert!(cfg.tree.siblings.is_empty());
+    }
+
+    #[test]
+    fn load_from_missing_dir_is_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load_from(&dir.path().join("nope")).unwrap();
+        assert!(cfg.realm.is_empty());
+    }
 }
