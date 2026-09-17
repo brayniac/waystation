@@ -176,25 +176,29 @@ pub fn name_from_path(p: &Path) -> String {
 }
 
 /// Add `path` to the default tree's roster. Returns false if it was already there.
+///
+/// The operator's spelling of `path` is what gets stored, not its expanded
+/// form — see `stored_spelling`. `expanded` is only for the existence check,
+/// the default-tree check, and the dedup.
 pub fn roster_add(root: &Path, path: &Path) -> Result<bool> {
     let root = expand_tilde(root);
-    let path = expand_tilde(path);
-    if !path.join("config.toml").exists() {
+    let expanded = expand_tilde(path);
+    if !expanded.join("config.toml").exists() {
         bail!(
             "{} has no config.toml; set the tree up first with \
              `WAYSTATION_HOME={} waystation setup ...`",
-            path.display(),
-            path.display()
+            expanded.display(),
+            expanded.display()
         );
     }
-    if path == root {
-        bail!("{} is the default tree; it is always in the roster", path.display());
+    if expanded == root {
+        bail!("{} is the default tree; it is always in the roster", expanded.display());
     }
     let mut cfg = Config::load_from(&root)?;
-    if cfg.tree.siblings.iter().any(|s| same_tree(s, &path)) {
+    if cfg.tree.siblings.iter().any(|s| same_tree(s, &expanded)) {
         return Ok(false);
     }
-    cfg.tree.siblings.push(path);
+    cfg.tree.siblings.push(stored_spelling(path, &expanded));
     cfg.save_to(&root)?;
     Ok(true)
 }
@@ -211,6 +215,18 @@ pub fn roster_rm(root: &Path, path: &Path) -> Result<bool> {
     }
     cfg.save_to(&root)?;
     Ok(true)
+}
+
+/// What to persist for a sibling the operator named. Keeps a `~` or absolute
+/// spelling as written, so a roster stays portable across machines; absolutizes
+/// a relative one, which would otherwise resolve against whatever directory a
+/// later command runs in.
+fn stored_spelling(given: &Path, expanded: &Path) -> PathBuf {
+    if given.starts_with("~") || given.is_absolute() {
+        given.to_path_buf()
+    } else {
+        expanded.canonicalize().unwrap_or_else(|_| expanded.to_path_buf())
+    }
 }
 
 /// Do two paths name the same tree? Compares canonically when both paths
@@ -529,6 +545,37 @@ mod tests {
         write_tree(&root, None, &[], &[]);
         let err = roster_add(&root, &tmp.path().join("nothing-here")).unwrap_err().to_string();
         assert!(err.contains("no config.toml"), "{err}");
+    }
+
+    #[test]
+    fn stored_spelling_keeps_a_tilde_spelling_unchanged() {
+        // Regression test for the bug where roster_add stored the expanded,
+        // machine-specific path instead of the operator's `~` spelling. This
+        // needs no real home directory: the `~` branch never looks at `expanded`.
+        let given = Path::new("~/.waystation-work");
+        let expanded = Path::new("/wherever/this/machine/keeps/home/.waystation-work");
+        assert_eq!(stored_spelling(given, expanded), given);
+    }
+
+    #[test]
+    fn stored_spelling_keeps_an_absolute_spelling_unchanged() {
+        let given = Path::new("/trees/work");
+        assert_eq!(stored_spelling(given, given), given);
+    }
+
+    #[test]
+    fn stored_spelling_absolutizes_a_relative_spelling() {
+        // A relative path must not be stored as given: it would resolve
+        // against whatever directory a later command happens to run in.
+        let cwd = std::env::current_dir().unwrap();
+        let tmp = tempfile::tempdir_in(&cwd).unwrap();
+        let name = tmp.path().file_name().unwrap();
+        let relative = PathBuf::from(name);
+        // expand_tilde leaves a relative, non-tilde path unchanged, so
+        // `expanded` is the same relative path in this case too.
+        let stored = stored_spelling(&relative, &relative);
+        assert!(stored.is_absolute(), "{stored:?}");
+        assert_eq!(stored, tmp.path().canonicalize().unwrap());
     }
 
     #[test]
