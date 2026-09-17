@@ -76,7 +76,7 @@ mod tests {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cargo test --lib tree_table_round_trips`
+Run: `cargo test tree_table_round_trips`
 
 Expected: FAIL to compile — `no field 'tree' on type 'Config'`, `no function or associated item named 'save_to'`.
 
@@ -156,7 +156,7 @@ Replace `load` and `save` (`src/config.rs:135-157`) with directory-taking versio
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cargo test --lib config::tests`
+Run: `cargo test config::tests`
 
 Expected: PASS, 3 tests.
 
@@ -221,7 +221,7 @@ mod tree;
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cargo test --lib claims_match_exactly_or_by_owner_glob`
+Run: `cargo test claims_match_exactly_or_by_owner_glob`
 
 Expected: FAIL — `assertion failed: claim_matches("brayniac/rezolus", "brayniac/rezolus")`.
 
@@ -244,7 +244,7 @@ pub fn claim_matches(claim: &str, project: &str) -> bool {
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `cargo test --lib claims_match_exactly_or_by_owner_glob`
+Run: `cargo test claims_match_exactly_or_by_owner_glob`
 
 Expected: PASS.
 
@@ -392,7 +392,7 @@ mod tests {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test --lib tree::tests`
+Run: `cargo test tree::tests`
 
 Expected: the resolution tests FAIL with `not implemented`; `claims_match_exactly_or_by_owner_glob` still passes.
 
@@ -430,7 +430,7 @@ Replace `Roster::resolve` in `src/tree.rs`:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cargo test --lib tree::tests`
+Run: `cargo test tree::tests`
 
 Expected: PASS, 8 tests.
 
@@ -559,7 +559,7 @@ Add `use std::path::Path;` to the imports, and add these tests to `mod tests`:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test --lib tree::tests`
+Run: `cargo test tree::tests`
 
 Expected: the four `load` tests FAIL with `not implemented`; `names_fall_back_to_the_directory` passes.
 
@@ -613,7 +613,7 @@ use crate::config::Config;
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cargo test --lib tree::tests`
+Run: `cargo test tree::tests`
 
 Expected: PASS, 13 tests.
 
@@ -666,7 +666,7 @@ Add to `mod tests`:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test --lib exports_`
+Run: `cargo test exports_`
 
 Expected: FAIL — `assertion \`left == right\` failed`, left is empty.
 
@@ -686,7 +686,7 @@ pub fn env_exports(tree: &Tree, project: Option<&str>) -> String {
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cargo test --lib exports_`
+Run: `cargo test exports_`
 
 Expected: PASS, 2 tests.
 
@@ -727,6 +727,10 @@ In `src/main.rs`, add before the `Cmd::Serve` arm:
             Ok(())
         }
 ```
+
+`default_root` now has a caller, so delete the `#[allow(dead_code)]` attribute
+Task 1 put above it in `src/config.rs` and confirm
+`cargo clippy --all-targets -- -D warnings` is still clean.
 
 - [ ] **Step 8: Verify the command end to end**
 
@@ -814,7 +818,7 @@ Add to `mod tests`:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test --lib roster_`
+Run: `cargo test roster_`
 
 Expected: FAIL with `not implemented`.
 
@@ -862,7 +866,7 @@ pub fn roster_rm(root: &Path, path: &Path) -> Result<bool> {
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cargo test --lib roster_`
+Run: `cargo test roster_`
 
 Expected: PASS, 2 tests.
 
@@ -982,10 +986,11 @@ git commit -m "cli: waystation tree ls/add/rm"
 Add the declaration to `src/tree.rs`:
 
 ```rust
-/// Add a project claim to the tree rooted at `dir`. Returns false if already claimed.
-pub fn claim_project(dir: &Path, project: &str) -> Result<bool> {
-    let _ = (dir, project);
-    bail!("not implemented")
+/// Add a project claim, unless an equal one is already present.
+/// Returns whether it was added. `setup` calls this on the config it already holds.
+pub fn add_claim(projects: &mut Vec<String>, project: &str) -> bool {
+    let _ = (projects, project);
+    false
 }
 ```
 
@@ -994,45 +999,41 @@ Add to `mod tests`:
 ```rust
     #[test]
     fn claiming_a_project_is_idempotent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join(".waystation-oss");
-        write_tree(&dir, Some("oss"), &[], &[]);
-
-        assert!(claim_project(&dir, "brayniac/rezolus").unwrap());
-        assert!(!claim_project(&dir, "brayniac/rezolus").unwrap());
-        assert!(claim_project(&dir, "brayniac/llm-perf").unwrap());
-
-        let cfg = Config::load_from(&dir).unwrap();
-        assert_eq!(cfg.tree.projects, vec!["brayniac/rezolus".to_string(), "brayniac/llm-perf".to_string()]);
+        let mut projects: Vec<String> = vec![];
+        assert!(add_claim(&mut projects, "brayniac/rezolus"));
+        assert!(!add_claim(&mut projects, "brayniac/rezolus"));
+        assert!(!add_claim(&mut projects, "Brayniac/Rezolus"), "claims are case-insensitive");
+        assert!(add_claim(&mut projects, "brayniac/llm-perf"));
+        assert_eq!(
+            projects,
+            vec!["brayniac/rezolus".to_string(), "brayniac/llm-perf".to_string()]
+        );
     }
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cargo test --lib claiming_a_project_is_idempotent`
+Run: `cargo test claiming_a_project_is_idempotent`
 
-Expected: FAIL with `not implemented`.
+Expected: FAIL — `assertion failed: add_claim(&mut projects, "brayniac/rezolus")`.
 
 - [ ] **Step 3: Write the implementation**
 
-Replace `claim_project` in `src/tree.rs`:
+Replace `add_claim` in `src/tree.rs`:
 
 ```rust
-pub fn claim_project(dir: &Path, project: &str) -> Result<bool> {
-    let dir = expand_tilde(dir);
-    let mut cfg = Config::load_from(&dir)?;
-    if cfg.tree.projects.iter().any(|c| c.eq_ignore_ascii_case(project)) {
-        return Ok(false);
+pub fn add_claim(projects: &mut Vec<String>, project: &str) -> bool {
+    if projects.iter().any(|c| c.eq_ignore_ascii_case(project)) {
+        return false;
     }
-    cfg.tree.projects.push(project.to_string());
-    cfg.save_to(&dir)?;
-    Ok(true)
+    projects.push(project.to_string());
+    true
 }
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `cargo test --lib claiming_a_project_is_idempotent`
+Run: `cargo test claiming_a_project_is_idempotent`
 
 Expected: PASS.
 
@@ -1061,10 +1062,8 @@ Add before `cfg.validate()?;` in that arm:
             if tree_name.is_some() {
                 cfg.tree.name = tree_name;
             }
-            if let Some(p) = project
-                && !cfg.tree.projects.iter().any(|c| c.eq_ignore_ascii_case(&p))
-            {
-                cfg.tree.projects.push(p);
+            if let Some(p) = project {
+                tree::add_claim(&mut cfg.tree.projects, &p);
             }
 ```
 
@@ -1230,3 +1229,5 @@ git commit -m "docs: trees, claims, and the env launcher"
 - [ ] `cargo build && ./scripts/e2e.sh` — the existing two-agent end-to-end run still passes, confirming the config change did not disturb realm handling
 - [ ] `waystation env` in a repository claimed by no tree prints the default tree
 - [ ] `waystation tree ls` marks the tree that wins in the current directory
+- [ ] `grep -rn 'allow(dead_code)' src/` returns nothing — every item the plan
+      introduced has a real caller by the end
