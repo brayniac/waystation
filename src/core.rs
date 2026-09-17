@@ -24,7 +24,7 @@ pub struct Core {
 /// `CLAUDE_PROJECT_DIR` (or the current directory). Returns `owner/name`.
 pub fn detect_project() -> Option<String> {
     if let Ok(p) = std::env::var("WAYSTATION_PROJECT") {
-        return if p.is_empty() { None } else { Some(p) };
+        return if p.is_empty() { None } else { Some(normalize_project(&p)) };
     }
     let dir = std::env::var("CLAUDE_PROJECT_DIR")
         .ok()
@@ -56,6 +56,18 @@ pub fn project_from_remote(url: &str) -> Option<String> {
         return None;
     }
     Some(format!("{owner}/{name}"))
+}
+
+/// Reduce a nested group path to `owner/name`, the same shape
+/// `project_from_remote` produces. A value with fewer than two slashes is
+/// returned unchanged, so a bare value used as a channel name still works.
+fn normalize_project(p: &str) -> String {
+    match p.rsplit_once('/') {
+        Some((owner, name)) if owner.contains('/') && !name.is_empty() => {
+            format!("{}/{name}", owner.rsplit('/').next().unwrap_or(owner))
+        }
+        _ => p.to_string(),
+    }
 }
 
 /// The channel that broadcasts to everyone working in a project.
@@ -298,6 +310,22 @@ home, post internally and ask a human to decide. When in doubt, do not send.",
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_group_overrides_normalize_like_remotes() {
+        // A nested group path reduces to the immediate owner and the name.
+        assert_eq!(normalize_project("group/subgroup/repo"), "subgroup/repo");
+        // An already-normal project, and a bare value used as a channel name,
+        // are both left exactly as given.
+        assert_eq!(normalize_project("owner/name"), "owner/name");
+        assert_eq!(normalize_project("bare"), "bare");
+        assert_eq!(normalize_project("trailing/"), "trailing/");
+        // The override and the remote agree about the same repository.
+        assert_eq!(
+            normalize_project("group/subgroup/repo"),
+            project_from_remote("https://gitlab.com/group/subgroup/repo.git").unwrap()
+        );
+    }
 
     #[test]
     fn project_parsing() {
