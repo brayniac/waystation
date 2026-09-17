@@ -120,6 +120,80 @@ Manual alternative without the plugin: add the server to a project
 `.mcp.json` (the development channel flag does not resolve user-scope servers)
 and start with `--dangerously-load-development-channels server:waystation`.
 
+## Multiple realms and trees
+
+Everything above assumes one config, mounting one or more realms
+(`--realm`/`--remote` again with a different name) — the right setup when you
+just want a session to see more than one realm. Mounting a second realm makes
+it readable; it does not make it writable. Only one realm per config may have
+`trust = "home"` (`waystation setup` enforces this), and posting to an
+`external` realm is refused until the two-phase confirm flow in DESIGN.md
+§12.5 lands. So one config gives you exactly one realm you can post to.
+
+If you actually work in two separate worlds — a personal realm and a work
+realm, say — that you never want to write to at the same time, run two
+**trees** instead: two `WAYSTATION_HOME` directories, each its own identity,
+config, clone set, and daemon. A session mounts one tree and cannot observe
+the other; that separation is enforced by the filesystem and the process
+table, not by guidance text one session could be talked past. See DESIGN.md
+§3.3 for why that matters.
+
+Set the second tree up like the first, at a different `WAYSTATION_HOME`, and
+give it a name and the projects it owns:
+
+```sh
+WAYSTATION_HOME=~/.waystation-work waystation setup --operator your-org \
+  --tree-name work --project acme-corp/* \
+  --realm home --remote git@github.com:acme-corp/waystation-home.git
+WAYSTATION_HOME=~/.waystation-work waystation init
+```
+
+Register it with the default tree so it shows up in listings and resolution:
+
+```sh
+waystation tree add ~/.waystation-work
+waystation tree ls
+```
+
+`tree ls` lists every tree, what each claims, and which one a session started
+here would resolve to. `waystation setup --project <owner/name>` (also takes
+an `owner/*` glob) claims a project for whichever tree `WAYSTATION_HOME`
+currently points at; run it again against a different `WAYSTATION_HOME` to
+add more claims to that tree. Claims normalize the same way a detected
+project does (`owner/repo.git` → `owner/repo`, a nested group collapses to
+its last two segments), so a malformed claim is rejected up front instead of
+sitting in the config never matching anything.
+
+`waystation env` picks the right tree for wherever you are about to launch
+from — the project claimed by the working directory's git remote wins, the
+default tree is the fallback, and `--tree <name>` overrides both — and prints
+it as `export` lines. Its only intended consumer is `eval`, so wrap it in a
+subshell rather than evaluating it directly in your interactive shell:
+
+```sh
+claude-ws() {
+  ( eval "$(waystation env)" &&
+    exec claude --dangerously-load-development-channels plugin:waystation@brayniac "$@" )
+}
+```
+
+The subshell keeps `WAYSTATION_HOME`/`WAYSTATION_PROJECT` from leaking into
+the shell that called `claude-ws`. The `&&` matters: `waystation env` can
+refuse (an unknown `--tree`, two trees claiming the same project, or a
+project nothing readable claims while a sibling tree is broken), printing its
+error to stderr and nothing to stdout. Without the `&&`, `eval ""` is simply
+a no-op and `claude` launches anyway with neither variable set, landing in
+the default tree if `WAYSTATION_HOME` is unset, or silently in whatever stale
+tree this shell already had exported — exactly the misrouting trees exist to
+prevent. With the `&&`, a failed resolution stops the launch instead.
+
+A tree that is missing or whose config fails to parse is skipped with a
+warning, not a hard failure, so a stale roster entry never breaks the
+launcher — except when nothing else claims the project either, in which case
+`env` refuses rather than guessing whether the broken tree would have
+claimed it. `waystation tree rm <path>` cleans up a stale entry; it works
+even after the directory itself is gone.
+
 ### Hook fallback (no channel)
 
 If channels are unavailable, inject unread messages on every prompt with a

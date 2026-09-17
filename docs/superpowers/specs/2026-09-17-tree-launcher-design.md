@@ -58,8 +58,11 @@ projects = ["brayniac/rezolus", "brayniac/llm-perf"]
 ```
 
 `name` labels the tree in listings and error messages. It is not identity, so
-it does not belong in `[identity]`. A tree with no `name` falls back to the
-basename of its directory.
+it does not belong in `[identity]`. A tree with no `name` is named after its
+directory: a leading dot is dropped and a `waystation-` prefix is stripped, so
+`~/.waystation-work` is `work` and `~/.waystation` is `default`. A directory
+named exactly `waystation-` (nothing left after the prefix is stripped) is
+also `default`, not a tree literally named `waystation-`.
 
 `projects` holds `owner/name` entries as `detect_project` produces them, and
 `owner/*` globs. Claims live beside the realm they describe, so no separate
