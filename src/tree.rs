@@ -52,7 +52,17 @@ impl Roster {
                 ));
                 continue;
             }
-            let sc = Config::load_from(&path)?;
+            let sc = match Config::load_from(&path) {
+                Ok(sc) => sc,
+                Err(e) => {
+                    roster.warnings.push(format!(
+                        "tree {} could not be read ({e}); skipped. Remove it with `waystation tree rm {}`",
+                        path.display(),
+                        sibling.display()
+                    ));
+                    continue;
+                }
+            };
             roster.trees.push(Tree {
                 name: sc.tree.name.clone().unwrap_or_else(|| name_from_path(&path)),
                 path,
@@ -94,7 +104,23 @@ impl Roster {
             .filter(|t| t.projects.iter().any(|c| claim_matches(c, project)))
             .collect();
         match claimants.as_slice() {
-            [] => self.default_tree(),
+            [] => {
+                // A skipped tree could be the one that would have claimed this
+                // project; falling back to the default here would silently
+                // misroute a work session into it. Refuse instead, unless
+                // nothing was skipped.
+                if !self.warnings.is_empty() {
+                    bail!(
+                        "project `{project}` matched no readable tree, and {} tree(s) could not \
+                         be read and might have claimed it ({}); fix the broken tree's config, \
+                         remove it with `waystation tree rm <path>`, or choose deliberately with \
+                         --tree <name>",
+                        self.warnings.len(),
+                        self.warnings.join("; ")
+                    );
+                }
+                self.default_tree()
+            }
             [one] => Ok(one),
             many => bail!(
                 "project `{project}` is claimed by more than one tree ({}); \
@@ -122,7 +148,10 @@ pub fn claim_matches(claim: &str, project: &str) -> bool {
     claim == project
 }
 
-/// Expand a leading `~` against the home directory.
+/// Expand a leading `~` against the home directory. Only a bare leading `~`
+/// component is expanded; `~user/...`-style paths are left alone unchanged,
+/// since these are config-file strings, not shell input, so shell-style
+/// `~user` expansion does not apply.
 pub fn expand_tilde(p: &Path) -> PathBuf {
     let Ok(rest) = p.strip_prefix("~") else { return p.to_path_buf() };
     match dirs::home_dir() {
@@ -137,7 +166,11 @@ pub fn name_from_path(p: &Path) -> String {
     let base = base.strip_prefix('.').unwrap_or(&base).to_string();
     match base.strip_prefix("waystation-") {
         Some(rest) if !rest.is_empty() => rest.to_string(),
-        _ if base == "waystation" || base.is_empty() => "default".to_string(),
+        // "waystation", "waystation-" (empty remainder), and no basename at all
+        // are all the default tree, not a tree literally named "waystation-".
+        _ if base == "waystation" || base == "waystation-" || base.is_empty() => {
+            "default".to_string()
+        }
         _ => base,
     }
 }
@@ -145,6 +178,7 @@ pub fn name_from_path(p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
 
     #[test]
     fn claims_match_exactly_or_by_owner_glob() {
@@ -257,7 +291,59 @@ mod tests {
         assert!(err.contains("/trees/second"), "{err}");
     }
 
-    use crate::config::Config;
+    fn roster_with_warning() -> Roster {
+        let mut r = roster();
+        r.warnings.push("tree /trees/broken could not be read (parse error)".into());
+        r
+    }
+
+    #[test]
+    fn unclaimed_project_with_warnings_present_is_an_error() {
+        let r = roster_with_warning();
+        let err = r.resolve(Some("someone/else"), None).unwrap_err().to_string();
+        assert!(err.contains("/trees/broken"), "{err}");
+        assert!(err.contains("tree rm"), "{err}");
+        assert!(err.contains("--tree"), "{err}");
+    }
+
+    #[test]
+    fn unclaimed_project_with_no_warnings_still_falls_back_to_default() {
+        let r = roster();
+        assert_eq!(r.resolve(Some("someone/else"), None).unwrap().name, "default");
+    }
+
+    #[test]
+    fn no_project_at_all_ignores_warnings() {
+        let r = roster_with_warning();
+        assert_eq!(r.resolve(None, None).unwrap().name, "default");
+    }
+
+    #[test]
+    fn claimed_project_ignores_warnings() {
+        let r = roster_with_warning();
+        assert_eq!(r.resolve(Some("brayniac/rezolus"), None).unwrap().name, "oss");
+    }
+
+    #[test]
+    fn forced_tree_ignores_warnings() {
+        let r = roster_with_warning();
+        assert_eq!(r.resolve(Some("someone/else"), Some("work")).unwrap().name, "work");
+    }
+
+    #[test]
+    fn expand_tilde_leaves_plain_paths_alone() {
+        assert_eq!(expand_tilde(Path::new("/trees/work")), PathBuf::from("/trees/work"));
+    }
+
+    #[test]
+    fn expand_tilde_leaves_shell_style_user_tilde_alone() {
+        assert_eq!(expand_tilde(Path::new("~user/foo")), PathBuf::from("~user/foo"));
+    }
+
+    #[test]
+    fn name_from_path_empty_remainder_after_prefix_is_also_default() {
+        assert_eq!(name_from_path(Path::new("/Users/x/.waystation-")), "default");
+    }
 
     fn write_tree(dir: &Path, name: Option<&str>, projects: &[&str], siblings: &[PathBuf]) {
         let mut cfg = Config::default();
@@ -302,6 +388,32 @@ mod tests {
         assert_eq!(r.trees.len(), 1);
         assert_eq!(r.warnings.len(), 1);
         assert!(r.warnings[0].contains(".waystation-gone"), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn a_sibling_with_unparseable_config_warns_and_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".waystation");
+        let broken = tmp.path().join(".waystation-broken");
+        write_tree(&root, None, &[], &[broken.clone()]);
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("config.toml"), "not valid toml {{{").unwrap();
+
+        let r = Roster::load(&root).unwrap();
+        assert_eq!(r.trees.len(), 1);
+        assert_eq!(r.warnings.len(), 1);
+        assert!(r.warnings[0].contains(".waystation-broken"), "{:?}", r.warnings);
+        assert!(r.warnings[0].contains("tree rm"), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn a_default_tree_with_unparseable_config_fails_loudly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".waystation");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("config.toml"), "not valid toml {{{").unwrap();
+
+        assert!(Roster::load(&root).is_err());
     }
 
     #[test]
