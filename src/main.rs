@@ -115,6 +115,11 @@ enum Cmd {
         #[arg(long)]
         tree: Option<String>,
     },
+    /// Inspect and maintain the trees on this machine.
+    Tree {
+        #[command(subcommand)]
+        cmd: TreeCmd,
+    },
     /// Run the MCP server on stdio.
     Serve,
     /// The per-machine daemon that owns the clones and polls the remotes.
@@ -138,6 +143,16 @@ enum RealmCmd {
     Ls,
     /// Remove a realm from the config and delete its local clones.
     Rm { name: String },
+}
+
+#[derive(Subcommand)]
+enum TreeCmd {
+    /// List the trees, what they claim, and which one wins here.
+    Ls,
+    /// Add a tree to the roster.
+    Add { path: std::path::PathBuf },
+    /// Remove a tree from the roster. The tree's own directory is left alone.
+    Rm { path: std::path::PathBuf },
 }
 
 fn parse_trust(s: &str) -> Result<Trust, String> {
@@ -390,6 +405,51 @@ fn main() -> Result<()> {
             let chosen = roster.resolve(project.as_deref(), forced.as_deref())?;
             print!("{}", tree::env_exports(chosen, project.as_deref()));
             Ok(())
+        }
+        Cmd::Tree { cmd } => {
+            let root = cli.root.clone().unwrap_or_else(config::default_root);
+            match cmd {
+                TreeCmd::Ls => {
+                    let roster = tree::Roster::load(&root)?;
+                    let project = core::detect_project();
+                    let resolved = roster.resolve(project.as_deref(), None);
+                    let chosen = resolved.as_ref().ok().map(|t| t.path.clone());
+                    for t in &roster.trees {
+                        let marker = if Some(&t.path) == chosen.as_ref() { " <- here" } else { "" };
+                        println!(
+                            "{}\t{}\t{}\tprojects={}{}",
+                            t.name,
+                            t.path.display(),
+                            if t.is_default { "default" } else { "-" },
+                            if t.projects.is_empty() { "-".into() } else { t.projects.join(",") },
+                            marker
+                        );
+                    }
+                    for w in &roster.warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    if let Err(e) = resolved {
+                        eprintln!("note: no tree resolves here: {e}");
+                    }
+                    Ok(())
+                }
+                TreeCmd::Add { path } => {
+                    if tree::roster_add(&root, &path)? {
+                        println!("added {}", path.display());
+                    } else {
+                        println!("{} is already in the roster", path.display());
+                    }
+                    Ok(())
+                }
+                TreeCmd::Rm { path } => {
+                    if tree::roster_rm(&root, &path)? {
+                        println!("removed {}", path.display());
+                    } else {
+                        println!("{} is not in the roster", path.display());
+                    }
+                    Ok(())
+                }
+            }
         }
         Cmd::Serve => {
             let core = Arc::new(open(cli.harness.clone(), session.clone(), cli.standalone)?);

@@ -41,7 +41,7 @@ impl Roster {
         };
         for sibling in &cfg.tree.siblings {
             let path = expand_tilde(sibling);
-            if roster.trees.iter().any(|t| t.path == path) {
+            if roster.trees.iter().any(|t| same_tree(&t.path, &path)) {
                 continue;
             }
             if !path.join("config.toml").exists() {
@@ -172,6 +172,55 @@ pub fn name_from_path(p: &Path) -> String {
             "default".to_string()
         }
         _ => base,
+    }
+}
+
+/// Add `path` to the default tree's roster. Returns false if it was already there.
+pub fn roster_add(root: &Path, path: &Path) -> Result<bool> {
+    let root = expand_tilde(root);
+    let path = expand_tilde(path);
+    if !path.join("config.toml").exists() {
+        bail!(
+            "{} has no config.toml; set the tree up first with \
+             `WAYSTATION_HOME={} waystation setup ...`",
+            path.display(),
+            path.display()
+        );
+    }
+    if path == root {
+        bail!("{} is the default tree; it is always in the roster", path.display());
+    }
+    let mut cfg = Config::load_from(&root)?;
+    if cfg.tree.siblings.iter().any(|s| same_tree(s, &path)) {
+        return Ok(false);
+    }
+    cfg.tree.siblings.push(path);
+    cfg.save_to(&root)?;
+    Ok(true)
+}
+
+/// Remove `path` from the default tree's roster. Returns false if it was absent.
+pub fn roster_rm(root: &Path, path: &Path) -> Result<bool> {
+    let root = expand_tilde(root);
+    let path = expand_tilde(path);
+    let mut cfg = Config::load_from(&root)?;
+    let before = cfg.tree.siblings.len();
+    cfg.tree.siblings.retain(|s| !same_tree(s, &path));
+    if cfg.tree.siblings.len() == before {
+        return Ok(false);
+    }
+    cfg.save_to(&root)?;
+    Ok(true)
+}
+
+/// Do two paths name the same tree? Compares canonically when both paths
+/// resolve, so `..` segments and symlinks do not create duplicate entries,
+/// and falls back to comparing the expanded paths when they do not.
+fn same_tree(a: &Path, b: &Path) -> bool {
+    let (a, b) = (expand_tilde(a), expand_tilde(b));
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
     }
 }
 
@@ -444,6 +493,76 @@ mod tests {
 
         let r = Roster::load(&root).unwrap();
         assert_eq!(r.trees.len(), 2);
+    }
+
+    #[test]
+    fn roster_add_and_rm_edit_the_default_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".waystation");
+        let work = tmp.path().join(".waystation-work");
+        write_tree(&root, None, &[], &[]);
+        write_tree(&work, Some("work"), &["acme-corp/*"], &[]);
+
+        assert!(roster_add(&root, &work).unwrap());
+        assert!(!roster_add(&root, &work).unwrap(), "adding twice is a no-op");
+        assert_eq!(Roster::load(&root).unwrap().trees.len(), 2);
+
+        assert!(roster_rm(&root, &work).unwrap());
+        assert!(!roster_rm(&root, &work).unwrap(), "removing twice is a no-op");
+        assert_eq!(Roster::load(&root).unwrap().trees.len(), 1);
+    }
+
+    #[test]
+    fn roster_add_refuses_a_directory_that_is_not_a_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".waystation");
+        write_tree(&root, None, &[], &[]);
+        let err = roster_add(&root, &tmp.path().join("nothing-here")).unwrap_err().to_string();
+        assert!(err.contains("no config.toml"), "{err}");
+    }
+
+    #[test]
+    fn same_tree_dedups_across_different_spellings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".waystation");
+        let work = tmp.path().join(".waystation-work");
+        write_tree(&root, None, &[], &[]);
+        write_tree(&work, Some("work"), &["acme-corp/*"], &[]);
+
+        assert!(roster_add(&root, &work).unwrap());
+
+        // Same tree, spelled by routing through `..` (through a directory that
+        // actually exists, so canonicalize can resolve it).
+        let via_dotdot = work.join("..").join(".waystation-work");
+        assert!(
+            !roster_add(&root, &via_dotdot).unwrap(),
+            "adding the same tree via a `..` spelling is a no-op"
+        );
+        assert_eq!(Roster::load(&root).unwrap().trees.len(), 2);
+
+        assert!(
+            roster_rm(&root, &via_dotdot).unwrap(),
+            "rm with the `..` spelling finds the entry added under the plain path"
+        );
+        assert_eq!(Roster::load(&root).unwrap().trees.len(), 1);
+    }
+
+    #[test]
+    fn resolve_refuses_to_misroute_when_a_real_sibling_is_broken() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".waystation");
+        let broken = tmp.path().join(".waystation-broken");
+        write_tree(&root, None, &[], std::slice::from_ref(&broken));
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("config.toml"), "not valid toml {{{").unwrap();
+
+        let roster = Roster::load(&root).unwrap();
+        assert_eq!(roster.trees.len(), 1);
+        assert_eq!(roster.warnings.len(), 1);
+
+        let err = roster.resolve(Some("someone/else"), None).unwrap_err().to_string();
+        assert!(err.contains("could not be read"), "{err}");
+        assert!(err.contains("tree rm"), "{err}");
     }
 
     #[test]
