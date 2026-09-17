@@ -164,9 +164,6 @@ pub fn config_path() -> PathBuf {
 
 /// Where tree resolution starts. Never `WAYSTATION_HOME`: an inherited value
 /// would make a shell that once launched one tree keep resolving to it.
-///
-/// Unused until tree resolution (a later task) lands; allowed dead for now.
-#[allow(dead_code)]
 pub fn default_root() -> PathBuf {
     default_home()
 }

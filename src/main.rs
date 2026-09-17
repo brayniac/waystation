@@ -31,6 +31,9 @@ struct Cli {
     /// Use a private clone instead of the per-machine daemon.
     #[arg(long, env = "WAYSTATION_STANDALONE", global = true)]
     standalone: bool,
+    /// Where tree resolution starts. Testing hook; defaults to `~/.waystation`.
+    #[arg(long, global = true, hide = true)]
+    root: Option<std::path::PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -106,6 +109,12 @@ enum Cmd {
     Agents,
     /// Fetch every realm once.
     Sync,
+    /// Resolve the tree for this directory and print shell exports.
+    Env {
+        /// Use this tree instead of the one claiming this repository.
+        #[arg(long)]
+        tree: Option<String>,
+    },
     /// Run the MCP server on stdio.
     Serve,
     /// The per-machine daemon that owns the clones and polls the remotes.
@@ -372,6 +381,14 @@ fn main() -> Result<()> {
         Cmd::Daemon { cmd: DaemonCmd::Stop } => {
             daemon::control("shutdown")?;
             println!("daemon stopping");
+            Ok(())
+        }
+        Cmd::Env { tree: forced } => {
+            let root = cli.root.clone().unwrap_or_else(config::default_root);
+            let roster = tree::Roster::load(&root)?;
+            let project = core::detect_project();
+            let chosen = roster.resolve(project.as_deref(), forced.as_deref())?;
+            print!("{}", tree::env_exports(chosen, project.as_deref()));
             Ok(())
         }
         Cmd::Serve => {

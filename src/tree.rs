@@ -175,6 +175,15 @@ pub fn name_from_path(p: &Path) -> String {
     }
 }
 
+/// The shell lines `waystation env` prints for a resolved tree.
+pub fn env_exports(tree: &Tree, project: Option<&str>) -> String {
+    let mut out = format!("export WAYSTATION_HOME={}\n", tree.path.display());
+    if let Some(p) = project {
+        out.push_str(&format!("export WAYSTATION_PROJECT={p}\n"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,7 +375,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join(".waystation");
         let work = tmp.path().join(".waystation-work");
-        write_tree(&root, None, &[], &[work.clone()]);
+        write_tree(&root, None, &[], std::slice::from_ref(&work));
         write_tree(&work, Some("work"), &["acme-corp/*"], &[]);
 
         let r = Roster::load(&root).unwrap();
@@ -382,7 +391,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join(".waystation");
         let gone = tmp.path().join(".waystation-gone");
-        write_tree(&root, None, &[], &[gone.clone()]);
+        write_tree(&root, None, &[], std::slice::from_ref(&gone));
 
         let r = Roster::load(&root).unwrap();
         assert_eq!(r.trees.len(), 1);
@@ -395,7 +404,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join(".waystation");
         let broken = tmp.path().join(".waystation-broken");
-        write_tree(&root, None, &[], &[broken.clone()]);
+        write_tree(&root, None, &[], std::slice::from_ref(&broken));
         std::fs::create_dir_all(&broken).unwrap();
         std::fs::write(broken.join("config.toml"), "not valid toml {{{").unwrap();
 
@@ -435,5 +444,21 @@ mod tests {
 
         let r = Roster::load(&root).unwrap();
         assert_eq!(r.trees.len(), 2);
+    }
+
+    #[test]
+    fn exports_name_the_tree_and_the_project() {
+        let t = tree("oss", &[], false);
+        let out = env_exports(&t, Some("brayniac/rezolus"));
+        assert_eq!(
+            out,
+            "export WAYSTATION_HOME=/trees/oss\nexport WAYSTATION_PROJECT=brayniac/rezolus\n"
+        );
+    }
+
+    #[test]
+    fn exports_omit_the_project_when_there_is_none() {
+        let t = tree("default", &[], true);
+        assert_eq!(env_exports(&t, None), "export WAYSTATION_HOME=/trees/default\n");
     }
 }
