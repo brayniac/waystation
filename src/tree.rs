@@ -240,13 +240,33 @@ fn same_tree(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// Quote a value for POSIX `sh` so `eval` sees exactly one literal word.
+/// A single quote is closed, escaped, and reopened — the standard `'\''` dance.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 /// The shell lines `waystation env` prints for a resolved tree.
-pub fn env_exports(tree: &Tree, project: Option<&str>) -> String {
-    let mut out = format!("export WAYSTATION_HOME={}\n", tree.path.display());
-    if let Some(p) = project {
-        out.push_str(&format!("export WAYSTATION_PROJECT={p}\n"));
+///
+/// The caller's only consumer is `eval "$(waystation env)"`, so every value is
+/// single-quoted for `sh` before it is emitted. A control character (e.g. a
+/// newline) survives quoting unharmed but is still refused: something that can
+/// smuggle extra lines past a human skimming the output is pathological,
+/// whatever its source (a tree path, or a project parsed from a git remote
+/// URL that is not under this tool's control).
+pub fn env_exports(tree: &Tree, project: Option<&str>) -> Result<String> {
+    let path = tree.path.to_string_lossy();
+    if path.chars().any(|c| c.is_control()) {
+        bail!("tree path {path:?} contains a control character; refusing to emit it for `eval`");
     }
-    out
+    let mut out = format!("export WAYSTATION_HOME={}\n", sh_quote(&path));
+    if let Some(p) = project {
+        if p.chars().any(|c| c.is_control()) {
+            bail!("project {p:?} contains a control character; refusing to emit it for `eval`");
+        }
+        out.push_str(&format!("export WAYSTATION_PROJECT={}\n", sh_quote(p)));
+    }
+    Ok(out)
 }
 
 /// Add a project claim, unless an equal one is already present.
@@ -625,17 +645,84 @@ mod tests {
     #[test]
     fn exports_name_the_tree_and_the_project() {
         let t = tree("oss", &[], false);
-        let out = env_exports(&t, Some("brayniac/rezolus"));
+        let out = env_exports(&t, Some("brayniac/rezolus")).unwrap();
         assert_eq!(
             out,
-            "export WAYSTATION_HOME=/trees/oss\nexport WAYSTATION_PROJECT=brayniac/rezolus\n"
+            "export WAYSTATION_HOME='/trees/oss'\nexport WAYSTATION_PROJECT='brayniac/rezolus'\n"
         );
     }
 
     #[test]
     fn exports_omit_the_project_when_there_is_none() {
         let t = tree("default", &[], true);
-        assert_eq!(env_exports(&t, None), "export WAYSTATION_HOME=/trees/default\n");
+        assert_eq!(env_exports(&t, None).unwrap(), "export WAYSTATION_HOME='/trees/default'\n");
+    }
+
+    #[test]
+    fn exports_quote_a_project_that_looks_like_a_shell_injection() {
+        let t = tree("oss", &[], false);
+        let out = env_exports(&t, Some("acme/pwn;touch PWNED")).unwrap();
+        assert_eq!(
+            out,
+            "export WAYSTATION_HOME='/trees/oss'\nexport WAYSTATION_PROJECT='acme/pwn;touch PWNED'\n"
+        );
+    }
+
+    #[test]
+    fn exports_quote_a_path_containing_a_space() {
+        let t = Tree {
+            path: PathBuf::from("/Users/x/Library/CloudStorage/My Drive/.waystation"),
+            ..tree("default", &[], true)
+        };
+        let out = env_exports(&t, None).unwrap();
+        assert_eq!(
+            out,
+            "export WAYSTATION_HOME='/Users/x/Library/CloudStorage/My Drive/.waystation'\n"
+        );
+    }
+
+    #[test]
+    fn exports_escape_a_single_quote_in_a_value() {
+        let t = tree("oss", &[], false);
+        let out = env_exports(&t, Some("brayniac/it's-fine")).unwrap();
+        assert_eq!(
+            out,
+            "export WAYSTATION_HOME='/trees/oss'\nexport WAYSTATION_PROJECT='brayniac/it'\\''s-fine'\n"
+        );
+    }
+
+    #[test]
+    fn exports_refuse_a_project_with_a_control_character() {
+        let t = tree("oss", &[], false);
+        let err = env_exports(&t, Some("brayniac/rezolus\nexport EVIL=1")).unwrap_err().to_string();
+        assert!(err.contains("control character"), "{err}");
+    }
+
+    #[test]
+    fn exports_refuse_a_path_with_a_control_character() {
+        let t = Tree { path: PathBuf::from("/trees/oss\nexport EVIL=1"), ..tree("oss", &[], false) };
+        let err = env_exports(&t, None).unwrap_err().to_string();
+        assert!(err.contains("control character"), "{err}");
+    }
+
+    /// Not just that we quoted the way we meant to — that the quoting actually
+    /// survives a real shell's `eval`, for both the injection and the space case.
+    #[test]
+    fn exports_round_trip_through_a_real_shell_eval() {
+        for project in ["acme/pwn;touch PWNED", "brayniac/has space"] {
+            let t = tree("oss", &[], false);
+            let out = env_exports(&t, Some(project)).unwrap();
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(r#"eval "$1"; printf %s "$WAYSTATION_PROJECT""#)
+                .arg("--")
+                .arg(&out)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{:?}", output);
+            let recovered = String::from_utf8(output.stdout).unwrap();
+            assert_eq!(recovered, project, "round-trip failed for {project:?}: exports were {out:?}");
+        }
     }
 
     #[test]

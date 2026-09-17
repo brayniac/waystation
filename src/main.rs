@@ -32,6 +32,8 @@ struct Cli {
     #[arg(long, env = "WAYSTATION_STANDALONE", global = true)]
     standalone: bool,
     /// Where tree resolution starts. Testing hook; defaults to `~/.waystation`.
+    /// Honoured by `env` and `tree` only — every other subcommand still reads
+    /// `WAYSTATION_HOME`, even though clap accepts this flag on all of them.
     #[arg(long, global = true, hide = true)]
     root: Option<std::path::PathBuf>,
     #[command(subcommand)]
@@ -419,7 +421,8 @@ fn main() -> Result<()> {
             let roster = tree::Roster::load(&root)?;
             let project = core::detect_project();
             let chosen = roster.resolve(project.as_deref(), forced.as_deref())?;
-            print!("{}", tree::env_exports(chosen, project.as_deref()));
+            let exports = tree::env_exports(chosen, project.as_deref())?;
+            print!("{exports}");
             Ok(())
         }
         Cmd::Tree { cmd } => {
