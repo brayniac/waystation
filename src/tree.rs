@@ -191,7 +191,7 @@ pub fn roster_add(root: &Path, path: &Path) -> Result<bool> {
             expanded.display()
         );
     }
-    if expanded == root {
+    if same_tree(&expanded, &root) {
         bail!("{} is the default tree; it is always in the roster", expanded.display());
     }
     let mut cfg = Config::load_from(&root)?;
@@ -230,14 +230,42 @@ fn stored_spelling(given: &Path, expanded: &Path) -> PathBuf {
 }
 
 /// Do two paths name the same tree? Compares canonically when both paths
-/// resolve, so `..` segments and symlinks do not create duplicate entries,
-/// and falls back to comparing the expanded paths when they do not.
+/// resolve, so `..` segments and symlinks do not create duplicate entries.
+/// When one or both no longer exist — the tree's directory was removed, say
+/// — falls back to a lexical comparison, so a stale roster entry can still
+/// be matched (and removed) under any equivalent spelling. This fallback
+/// cannot see through a symlink to a deleted target; that is a genuine
+/// limitation of comparing without touching the filesystem, not an oversight.
 fn same_tree(a: &Path, b: &Path) -> bool {
     let (a, b) = (expand_tilde(a), expand_tilde(b));
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
+        _ => lexical_normalize(&a) == lexical_normalize(&b),
     }
+}
+
+/// Resolve `.` and `..` textually, with no filesystem access, so two spellings
+/// of a path that no longer exists still compare equal.
+fn lexical_normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                // A leading `..` has nothing to pop; keep it rather than
+                // silently changing which directory the path refers to.
+                if out.as_os_str().is_empty()
+                    || out.components().next_back() == Some(std::path::Component::ParentDir)
+                {
+                    out.push("..");
+                } else {
+                    out.pop();
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// Quote a value for POSIX `sh` so `eval` sees exactly one literal word.
@@ -622,6 +650,54 @@ mod tests {
             "rm with the `..` spelling finds the entry added under the plain path"
         );
         assert_eq!(Roster::load(&root).unwrap().trees.len(), 1);
+    }
+
+    #[test]
+    fn roster_add_refuses_the_default_tree_spelled_through_dotdot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".waystation");
+        let sibling_dir = tmp.path().join(".waystation-work");
+        write_tree(&root, None, &[], &[]);
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+
+        // The default tree, spelled by routing through a sibling and back out
+        // via `..`, must still be recognized as the default tree.
+        let via_dotdot = sibling_dir.join("..").join(".waystation");
+        let err = roster_add(&root, &via_dotdot).unwrap_err().to_string();
+        assert!(err.contains("is the default tree"), "{err}");
+    }
+
+    #[test]
+    fn same_tree_matches_two_spellings_of_a_deleted_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("somewhere").join("tree");
+        let plain = base.clone();
+        let via_dotdot = tmp.path().join("somewhere").join("nested").join("..").join("tree");
+        // Neither path exists on disk, so canonicalize fails on both sides
+        // and same_tree must fall back to a lexical comparison.
+        assert!(!plain.exists());
+        assert!(same_tree(&plain, &via_dotdot));
+    }
+
+    #[test]
+    fn roster_rm_removes_a_deleted_tree_by_an_equivalent_dotdot_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".waystation");
+        let work = tmp.path().join(".waystation-work");
+        write_tree(&root, None, &[], &[]);
+        write_tree(&work, Some("work"), &[], &[]);
+        assert!(roster_add(&root, &work).unwrap());
+
+        // The tree's directory is gone; only the stale roster entry remains.
+        std::fs::remove_dir_all(&work).unwrap();
+        assert_eq!(Roster::load(&root).unwrap().warnings.len(), 1);
+
+        let via_dotdot = tmp.path().join("nowhere-real").join("..").join(".waystation-work");
+        assert!(
+            roster_rm(&root, &via_dotdot).unwrap(),
+            "a `..` spelling still matches the entry stored plainly, even once the tree is gone"
+        );
+        assert_eq!(Roster::load(&root).unwrap().warnings.len(), 0);
     }
 
     #[test]

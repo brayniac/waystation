@@ -15,6 +15,7 @@ use clap::{Parser, Subcommand};
 use config::{Config, RealmConfig, Trust};
 use core::{Core, PostRequest};
 use model::{Kind, Priority};
+use std::path::PathBuf;
 use std::sync::Arc;
 use ulid::Ulid;
 
@@ -158,9 +159,9 @@ enum TreeCmd {
     /// List the trees, what they claim, and which one wins here.
     Ls,
     /// Add a tree to the roster.
-    Add { path: std::path::PathBuf },
+    Add { path: PathBuf },
     /// Remove a tree from the roster. The tree's own directory is left alone.
-    Rm { path: std::path::PathBuf },
+    Rm { path: PathBuf },
 }
 
 fn parse_trust(s: &str) -> Result<Trust, String> {
@@ -434,14 +435,13 @@ fn main() -> Result<()> {
                     let resolved = roster.resolve(project.as_deref(), None);
                     let chosen = resolved.as_ref().ok().map(|t| t.path.clone());
                     for t in &roster.trees {
-                        let marker = if Some(&t.path) == chosen.as_ref() { " <- here" } else { "" };
+                        let here = if Some(&t.path) == chosen.as_ref() { "<- here" } else { "" };
                         println!(
-                            "{}\t{}\t{}\tprojects={}{}",
+                            "{}\t{}\tdefault={}\tprojects={}\t{here}",
                             t.name,
                             t.path.display(),
-                            if t.is_default { "default" } else { "-" },
+                            if t.is_default { "yes" } else { "no" },
                             if t.projects.is_empty() { "-".into() } else { t.projects.join(",") },
-                            marker
                         );
                     }
                     for w in &roster.warnings {
