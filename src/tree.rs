@@ -1,10 +1,15 @@
 //! Trees: one `WAYSTATION_HOME` each, selected by the project a session runs in.
 
 /// Does `claim` cover `project`? Exact `owner/name`, or an `owner/*` glob.
+/// Comparison ignores surrounding whitespace and ASCII case.
 pub fn claim_matches(claim: &str, project: &str) -> bool {
     let claim = claim.trim().to_lowercase();
     let project = project.trim().to_lowercase();
     if let Some(owner) = claim.strip_suffix("/*") {
+        // An empty owner is not a wildcard: "/*" must not match everything.
+        if owner.is_empty() {
+            return false;
+        }
         return project
             .split_once('/')
             .is_some_and(|(o, rest)| o == owner && !rest.is_empty());
@@ -27,5 +32,9 @@ mod tests {
         assert!(!claim_matches("acme-corp", "acme-corp/api-gateway"));
         // Case follows the repository host: compare case-insensitively.
         assert!(claim_matches("Brayniac/Rezolus", "brayniac/rezolus"));
+        // Case-insensitivity applies to the glob branch too.
+        assert!(claim_matches("Acme-Corp/*", "acme-corp/api-gateway"));
+        // An empty owner is not a wildcard; "/*" must not match everything.
+        assert!(!claim_matches("/*", "/x"));
     }
 }
