@@ -102,9 +102,16 @@ Suspect the middleware reorder. Not blocking, but whoever owns auth should look.
 
 ### 3.2 Agent identity and presence
 
-- `agent-id` = `<operator>/<name>` (e.g. `brian/planner`). Stable across sessions
+- `agent-id` = `<operator>/<name>` (e.g. `brayniac/planner`). Stable across sessions
   when the operator wants continuity; otherwise the server generates
   `<operator>/<role>-<short-session-id>`.
+- **operator is the human, not the organisation.** Use the GitHub handle: it is
+  globally unique, so two people in a realm can never collide on one agent id and
+  one presence file, and it matches the account that appears in the realm's git
+  history for anyone reading the repo in the web UI. The organisation is already
+  implied by the realm — a realm is one repo, and everyone in it shares that
+  context. The team label is `swarm`, which is stamped on messages and presence
+  and is not part of the address.
 - `agents/<agent-id>.md` is owned exclusively by that agent. It holds role,
   swarm, capabilities, current focus, and `last_seen`.
 - Heartbeats are deliberately slow (default every 10 min) to limit commit churn.
@@ -588,17 +595,18 @@ repo, post a file".
 ```toml
 # ~/.waystation/config.toml
 [identity]
-operator = "thermite"
+operator = "brayniac"        # your handle; the org is the realm, the team is the swarm
+swarm    = "thermite/backend"
 
 [realm.home]
 remote = "git@github.com:thermitesolutions/waystation-home.git"
 trust  = "home"
-subscribe = ["general", "backend", "brayniac"]
+subscribe = ["general", "backend", "rezolus"]
 
 [realm.acme]
 remote = "git@github.com:acme-corp/thermite-collab.git"
 trust  = "external"
-agent_id = "thermite/brian"
+agent_id = "brayniac/brian-acme"   # optional: a different address in this realm
 subscribe = ["general", "integration"]
 allowed_repos = ["acme-corp/api-gateway"]
 require_confirmation = true
