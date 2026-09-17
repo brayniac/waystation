@@ -6,8 +6,11 @@ use std::path::PathBuf;
 /// One tree in the roster.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tree {
+    /// The tree's name, as configured; unique among trees a roster can resolve.
     pub name: String,
+    /// The tree's `WAYSTATION_HOME` directory.
     pub path: PathBuf,
+    /// `owner/name` entries, as `detect_project` produces them, and `owner/*` globs.
     pub projects: Vec<String>,
     /// The tree at `default_root()`: the fallback, and where the roster lives.
     pub is_default: bool,
@@ -29,12 +32,22 @@ impl Roster {
     /// Pick a tree: a forced name wins, else the one claiming `project`, else the default.
     pub fn resolve(&self, project: Option<&str>, forced: Option<&str>) -> Result<&Tree> {
         if let Some(name) = forced {
-            return self.trees.iter().find(|t| t.name == name).with_context(|| {
-                format!(
+            let named: Vec<&Tree> = self.trees.iter().filter(|t| t.name == name).collect();
+            return match named.as_slice() {
+                [] => bail!(
                     "unknown tree `{name}`; known trees: {}",
                     self.trees.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")
-                )
-            });
+                ),
+                [one] => Ok(*one),
+                many => bail!(
+                    "tree name `{name}` is ambiguous: it names more than one tree ({}); \
+                     rename all but one so tree names are unique",
+                    many.iter()
+                        .map(|t| format!("{} at {}", t.name, t.path.display()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
         }
         let Some(project) = project else { return self.default_tree() };
         let claimants: Vec<&Tree> = self
@@ -158,5 +171,31 @@ mod tests {
         assert!(err.contains("brayniac/rezolus"), "{err}");
         assert!(err.contains("oss"), "{err}");
         assert!(err.contains("second"), "{err}");
+    }
+
+    #[test]
+    fn no_default_tree_is_an_error() {
+        let r = Roster { trees: vec![tree("work", &[], false)], warnings: vec![] };
+        assert!(r.resolve(None, None).is_err());
+    }
+
+    #[test]
+    fn empty_roster_is_an_error_not_a_panic() {
+        let r = Roster::default();
+        assert!(r.resolve(None, None).is_err());
+        assert!(r.resolve(Some("brayniac/rezolus"), None).is_err());
+        assert!(r.resolve(None, Some("work")).is_err());
+    }
+
+    #[test]
+    fn duplicate_tree_names_are_an_error_naming_both_paths() {
+        let mut r = roster();
+        r.trees.push(Tree {
+            path: PathBuf::from("/trees/work-2"),
+            ..tree("work", &[], false)
+        });
+        let err = r.resolve(None, Some("work")).unwrap_err().to_string();
+        assert!(err.contains("/trees/work"), "{err}");
+        assert!(err.contains("/trees/work-2"), "{err}");
     }
 }
