@@ -311,46 +311,16 @@ pub fn add_claim(projects: &mut Vec<String>, project: &str) -> bool {
 }
 
 /// Normalize a claim typed at `setup --project` to the shape a resolved
-/// project takes, via the same normalization `detect_project` applies, so a
-/// claim can never be written in a shape a project can never match. A glob
+/// project takes. A thin wrapper over `core::normalize_project` — the same
+/// function `detect_project` applies to a `WAYSTATION_PROJECT` override —
+/// so a claim and an override for the same repository can never be
+/// normalized differently and so disagree about whether they match. A glob
 /// (`owner/*`) passes through unchanged aside from the same nested-group
 /// collapse an `owner/name` claim gets, since `*` is just a name segment.
-///
-/// A value that looks like a git remote URL — `https://host/owner/name` or
-/// the SCP-style `git@host:owner/name` an SSH clone's `origin` uses — is run
-/// through `project_from_remote`, the same parser `detect_project` applies to
-/// an actual remote. Without this, an SCP-style paste normalizes to garbage
-/// (`normalize_project` treats the whole `user@host:owner/repo` as a bare,
-/// slash-free name) that is accepted, stored, and matches nothing.
 pub fn normalize_claim(raw: &str) -> Result<String> {
-    let trimmed = raw.trim();
-    let normalized = if looks_like_remote_url(trimmed) {
-        crate::core::project_from_remote(trimmed)
-    } else {
-        crate::core::normalize_project(trimmed)
-    };
-    normalized.with_context(|| {
+    crate::core::normalize_project(raw).with_context(|| {
         format!("`{raw}` is not a valid project claim; expected `owner/name` or `owner/*`")
     })
-}
-
-/// Whether `s` is shaped like a git remote URL rather than a bare `owner/name`
-/// or `owner/*` glob claim: an explicit `scheme://` (`https://…`), or a `:`
-/// that appears before any `/` (the SCP-style `user@host:owner/repo`, which
-/// has no `://`). A claim or glob never contains a `:`, so this correctly
-/// fires on every realistic remote URL. It also fires on two inputs that
-/// are not one — a Windows-style path (`C:\repos\thing`) and a
-/// `host:port/owner/repo` string — but neither is a plausible `--project`
-/// value, so the heuristic is left as-is rather than special-cased for them.
-fn looks_like_remote_url(s: &str) -> bool {
-    if s.contains("://") {
-        return true;
-    }
-    match (s.find(':'), s.find('/')) {
-        (Some(colon), Some(slash)) => colon < slash,
-        (Some(_), None) => true,
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -922,5 +892,39 @@ mod tests {
         // observable from this unit test.
         assert_eq!(normalize_claim("rezolus").unwrap(), "rezolus");
         assert!(!normalize_claim("rezolus").unwrap().contains('/'));
+    }
+
+    #[test]
+    fn claim_and_override_normalization_never_disagree() {
+        // The regression test for the bug this was rewritten to fix: a
+        // `setup --project` claim and a `WAYSTATION_PROJECT` override for
+        // the same repository went through two separately-maintained
+        // routing checks (this file's own `looks_like_remote_url` plus
+        // `core::normalize_project`'s) that silently drifted apart -- an
+        // SCP-style claim normalized to `owner/repo` while an identical SCP
+        // override did not, so the override resolved to the wrong tree with
+        // no error. `normalize_claim` is now a thin wrapper over
+        // `core::normalize_project`, so this can only fail again if that
+        // wrapping is undone and a second, independent routing check is
+        // reintroduced here.
+        for input in [
+            "git@github.com:owner/repo.git",
+            "git@github.com:owner/repo",
+            "https://github.com/owner/repo.git",
+            "owner/repo",
+            "owner/repo.git",
+            "group/subgroup/repo",
+            "acme-corp/*",
+            "group/subgroup/*",
+            "rezolus",
+            "group//repo",
+            "",
+        ] {
+            assert_eq!(
+                normalize_claim(input).ok(),
+                crate::core::normalize_project(input),
+                "claim and override normalization disagree for `{input}`"
+            );
+        }
     }
 }
