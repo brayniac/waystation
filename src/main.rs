@@ -32,9 +32,12 @@ struct Cli {
     /// Use a private clone instead of the per-machine daemon.
     #[arg(long, env = "WAYSTATION_STANDALONE", global = true)]
     standalone: bool,
-    /// Where tree resolution starts. Testing hook; defaults to `~/.waystation`.
-    /// Honoured by `env` and `tree` only — every other subcommand still reads
-    /// `WAYSTATION_HOME`, even though clap accepts this flag on all of them.
+    /// Where tree resolution starts: which tree claims the repo a session
+    /// runs in. Testing hook; defaults to `~/.waystation`. Honoured by `env`
+    /// and `tree` only — every other subcommand still reads `WAYSTATION_HOME`,
+    /// even though clap accepts this flag on all of them. Not to be confused
+    /// with `setup --home`, which is which tree gets *configured* — a
+    /// different question from which tree resolution starts from.
     #[arg(long, global = true, hide = true)]
     root: Option<std::path::PathBuf>,
     #[command(subcommand)]
@@ -66,6 +69,14 @@ enum Cmd {
         trust: Option<Trust>,
         #[arg(long, value_delimiter = ',')]
         subscribe: Option<Vec<String>>,
+        /// Which tree to configure: the `WAYSTATION_HOME` directory `setup`
+        /// writes to. Defaults to `$WAYSTATION_HOME`. Not the same as the
+        /// top-level `--root`: `--root` is where tree *resolution* starts
+        /// (which tree claims a repo), `--home` is which tree you are
+        /// *configuring*. Without it, running `setup` with `WAYSTATION_HOME`
+        /// unset silently writes to the operator's real `~/.waystation`.
+        #[arg(long)]
+        home: Option<std::path::PathBuf>,
     },
     /// Clone every realm and create the initial layout in empty ones.
     Init,
@@ -213,8 +224,9 @@ fn main() -> Result<()> {
             _ => "cli".to_string(),
         });
     match cli.cmd {
-        Cmd::Setup { operator, agent, swarm, project, tree_name, realm, remote, trust, subscribe } => {
-            let mut cfg = Config::load()?;
+        Cmd::Setup { operator, agent, swarm, project, tree_name, realm, remote, trust, subscribe, home } => {
+            let home_dir = home.unwrap_or_else(config::home_dir);
+            let mut cfg = Config::load_from(&home_dir)?;
             if let Some(o) = operator {
                 cfg.identity.operator = o;
             }
@@ -231,6 +243,12 @@ fn main() -> Result<()> {
             if let Some(p) = project {
                 let normalized = tree::normalize_claim(&p)?;
                 let added = tree::add_claim(&mut cfg.tree.projects, &normalized);
+                if !normalized.contains('/') {
+                    eprintln!(
+                        "warning: claim `{normalized}` has no `/`; it will only match a bare \
+                         WAYSTATION_PROJECT override, not a repository detected from a git remote"
+                    );
+                }
                 claim_msg = Some(if normalized == p {
                     if added {
                         format!("claimed {normalized}")
@@ -267,11 +285,11 @@ fn main() -> Result<()> {
                 }
             }
             cfg.validate()?;
-            cfg.save()?;
+            cfg.save_to(&home_dir)?;
             if let Some(msg) = claim_msg {
                 println!("{msg}");
             }
-            println!("wrote {}", config::config_path().display());
+            println!("wrote {}", home_dir.join("config.toml").display());
             Ok(())
         }
         Cmd::Realm { cmd: RealmCmd::Ls } => {

@@ -158,10 +158,6 @@ pub fn home_dir() -> PathBuf {
     default_home()
 }
 
-pub fn config_path() -> PathBuf {
-    home_dir().join("config.toml")
-}
-
 /// Where tree resolution starts. Never `WAYSTATION_HOME`: an inherited value
 /// would make a shell that once launched one tree keep resolving to it.
 pub fn default_root() -> PathBuf {
