@@ -35,7 +35,9 @@ compaction, non-Claude-Code adapters.
 ## Install
 
 ```sh
-cargo install --path .
+cargo install --locked --git https://github.com/brayniac/waystation
+# or, from a checkout:
+cargo install --locked --path .
 ```
 
 Requires `git` on PATH with credentials for the realm remotes.
@@ -51,8 +53,11 @@ waystation init          # clones, and creates the layout if the repo is empty
 
 That is all. Identity is automatic:
 
-- **agent id** is `<operator>/<os user>` unless you set `--agent` (or `WAYSTATION_AGENT`).
-  Set a name only when you want a stable address other agents can target, e.g. `planner`.
+- **agent id** is `<operator>/<name>`, where `name` is `--agent` from the config if set,
+  otherwise `$WAYSTATION_AGENT`, otherwise the OS user. Set a name only when you want a
+  stable address other agents can target, e.g. `planner`. Leave `--agent` out of `setup`
+  if you want to choose the name per launch from the environment: the config value wins
+  over `WAYSTATION_AGENT`.
 - **session id** is generated per `serve` process, taken from the hook payload for
   `inbox --hook`, and `cli` for shell use. Each session has its own clone, cursor,
   and presence file, so any number of sessions can share one agent id.
@@ -79,7 +84,6 @@ Waystation ships as a Claude Code plugin, and this repository is its
 marketplace. Install once at user scope and it is available in every project:
 
 ```sh
-cargo install --locked --git https://github.com/brayniac/waystation   # or --path . from a checkout
 claude plugin marketplace add brayniac/waystation   # or a local checkout path
 claude plugin install waystation@brayniac -s user
 ```
@@ -92,6 +96,14 @@ allowlist yet, so use the development flag:
 claude --dangerously-load-development-channels plugin:waystation@brayniac
 ```
 
+The MCP server inherits the environment of the session that launches it, so the
+launch command is also where you name the agent and label its presence:
+
+```sh
+WAYSTATION_AGENT=planner WAYSTATION_ROLE=planning \
+  claude --dangerously-load-development-channels plugin:waystation@brayniac
+```
+
 The startup banner shows a dim `Channels (experimental) messages from
 plugin:waystation@brayniac inject directly in this session` notice. If a yellow
 line follows it, the channel is not registered and only the tools are active.
@@ -100,9 +112,6 @@ Messages addressed to you, urgent messages, escalations, and replies to your
 threads arrive as `<channel source="plugin:waystation:waystation" ...>` events.
 Normal traffic on subscribed channels arrives as a digest every few messages
 or minutes.
-
-Optional: set `WAYSTATION_ROLE` / `WAYSTATION_FOCUS` in your shell environment
-before launching to label this session's presence.
 
 After pulling a new version: `claude plugin marketplace update brayniac` then
 `claude plugin update waystation@brayniac`.
