@@ -24,7 +24,7 @@ pub struct Core {
 /// `CLAUDE_PROJECT_DIR` (or the current directory). Returns `owner/name`.
 pub fn detect_project() -> Option<String> {
     if let Ok(p) = std::env::var("WAYSTATION_PROJECT") {
-        return if p.is_empty() { None } else { Some(normalize_project(&p)) };
+        return normalize_project(&p);
     }
     let dir = std::env::var("CLAUDE_PROJECT_DIR")
         .ok()
@@ -50,6 +50,12 @@ pub fn project_from_remote(url: &str) -> Option<String> {
         no_scheme.split_once('/').map(|(_, r)| r).unwrap_or(no_scheme)
     };
     let tail = tail.trim_matches('/').trim_end_matches(".git");
+    project_from_path(tail)
+}
+
+/// `owner/name` from a repository path tail, collapsing a nested group path
+/// to its immediate owner. `None` if either half is missing.
+fn project_from_path(tail: &str) -> Option<String> {
     let (owner, name) = tail.rsplit_once('/')?;
     let owner = owner.rsplit('/').next().unwrap_or(owner);
     if name.is_empty() || owner.is_empty() {
@@ -58,16 +64,17 @@ pub fn project_from_remote(url: &str) -> Option<String> {
     Some(format!("{owner}/{name}"))
 }
 
-/// Reduce a nested group path to `owner/name`, the same shape
-/// `project_from_remote` produces. A value with fewer than two slashes is
-/// returned unchanged, so a bare value used as a channel name still works.
-fn normalize_project(p: &str) -> String {
-    match p.rsplit_once('/') {
-        Some((owner, name)) if owner.contains('/') && !name.is_empty() => {
-            format!("{}/{name}", owner.rsplit('/').next().unwrap_or(owner))
-        }
-        _ => p.to_string(),
+/// Normalize a `WAYSTATION_PROJECT` override to the shape a remote yields:
+/// surrounding whitespace, wrapping `/` and a trailing `.git` removed, and a
+/// nested group path reduced to `owner/name`. A bare value with no slash is
+/// kept as given, so it can still name a channel. An empty or slash-only
+/// value means no project.
+fn normalize_project(p: &str) -> Option<String> {
+    let t = p.trim().trim_matches('/').trim_end_matches(".git").trim_matches('/');
+    if t.is_empty() {
+        return None;
     }
+    Some(project_from_path(t).unwrap_or_else(|| t.to_string()))
 }
 
 /// The channel that broadcasts to everyone working in a project.
@@ -314,17 +321,38 @@ mod tests {
     #[test]
     fn nested_group_overrides_normalize_like_remotes() {
         // A nested group path reduces to the immediate owner and the name.
-        assert_eq!(normalize_project("group/subgroup/repo"), "subgroup/repo");
+        assert_eq!(normalize_project("group/subgroup/repo").as_deref(), Some("subgroup/repo"));
         // An already-normal project, and a bare value used as a channel name,
         // are both left exactly as given.
-        assert_eq!(normalize_project("owner/name"), "owner/name");
-        assert_eq!(normalize_project("bare"), "bare");
-        assert_eq!(normalize_project("trailing/"), "trailing/");
+        assert_eq!(normalize_project("owner/name").as_deref(), Some("owner/name"));
+        assert_eq!(normalize_project("bare").as_deref(), Some("bare"));
+        // A trailing slash is trimmed, not left dangling as an empty segment.
+        assert_eq!(normalize_project("trailing/").as_deref(), Some("trailing"));
         // The override and the remote agree about the same repository.
         assert_eq!(
             normalize_project("group/subgroup/repo"),
-            project_from_remote("https://gitlab.com/group/subgroup/repo.git").unwrap()
+            project_from_remote("https://gitlab.com/group/subgroup/repo.git")
         );
+        // A pasted remote URL's `.git` suffix normalizes the same as the remote form.
+        assert_eq!(
+            normalize_project("group/subgroup/repo.git").as_deref(),
+            Some("subgroup/repo")
+        );
+        assert_eq!(
+            normalize_project("group/subgroup/repo.git"),
+            project_from_remote("https://gitlab.com/group/subgroup/repo.git")
+        );
+        // A trailing slash after a nested group path is trimmed before reducing.
+        assert_eq!(normalize_project("group/subgroup/repo/").as_deref(), Some("subgroup/repo"));
+        // Four or more segments still reduce to just the immediate owner and name.
+        assert_eq!(normalize_project("a/b/c/d").as_deref(), Some("c/d"));
+        // A malformed leading `//` is trimmed away rather than yielding an empty owner.
+        assert_eq!(normalize_project("//repo").as_deref(), Some("repo"));
+        // Slash-only or empty input means no project.
+        assert_eq!(normalize_project("/"), None);
+        assert_eq!(normalize_project(""), None);
+        // Surrounding whitespace is trimmed.
+        assert_eq!(normalize_project(" owner/name ").as_deref(), Some("owner/name"));
     }
 
     #[test]
