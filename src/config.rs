@@ -39,6 +39,8 @@ pub struct Identity {
 /// where the roster lives.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TreeConfig {
+    /// Labels the tree in `waystation tree ls` output and in error messages.
+    /// Not an identity; purely a human-facing label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// `owner/name` entries, as `detect_project` produces them, and `owner/*` globs.
@@ -140,13 +142,20 @@ pub struct RealmConfig {
     pub local: Option<PathBuf>,
 }
 
+/// `~/.waystation`, with no regard for `WAYSTATION_HOME`.
+///
+/// Shared by `home_dir` and `default_root` so the two can only ever differ in
+/// whether they consult the env var — not accidentally drift on the fallback
+/// path or the directory name too.
+fn default_home() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".waystation")
+}
+
 pub fn home_dir() -> PathBuf {
     if let Ok(p) = std::env::var("WAYSTATION_HOME") {
         return PathBuf::from(p);
     }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".waystation")
+    default_home()
 }
 
 pub fn config_path() -> PathBuf {
@@ -159,7 +168,7 @@ pub fn config_path() -> PathBuf {
 /// Unused until tree resolution (a later task) lands; allowed dead for now.
 #[allow(dead_code)]
 pub fn default_root() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".waystation")
+    default_home()
 }
 
 impl Config {
@@ -187,7 +196,8 @@ impl Config {
 
     pub fn save_to(&self, dir: &Path) -> Result<()> {
         let path = dir.join("config.toml");
-        std::fs::create_dir_all(dir)?;
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating {}", dir.display()))?;
         std::fs::write(&path, toml::to_string_pretty(self)?)
             .with_context(|| format!("writing {}", path.display()))?;
         Ok(())
